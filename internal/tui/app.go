@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/lipgloss/table"
 	"github.com/eloualiche/wrds-download/internal/config"
 	"github.com/eloualiche/wrds-download/internal/db"
 	"github.com/eloualiche/wrds-download/internal/export"
@@ -43,7 +42,7 @@ const (
 
 type schemasLoadedMsg struct{ schemas []db.Schema }
 type tablesLoadedMsg struct{ tables []db.Table }
-type previewLoadedMsg struct{ result *db.PreviewResult }
+type metaLoadedMsg struct{ meta *db.TableMeta }
 type errMsg struct{ err error }
 type downloadDoneMsg struct{ path string }
 type tickMsg time.Time
@@ -72,12 +71,12 @@ type App struct {
 	focus         pane
 	state         appState
 
-	schemaList  list.Model
-	tableList   list.Model
-	previewCols   []string
-	previewRows   [][]string
-	previewScroll int
-	previewInfo   string // "~2.1M rows" etc.
+	schemaList       list.Model
+	tableList        list.Model
+	previewMeta      *db.TableMeta
+	previewScroll    int
+	previewFilter    textinput.Model
+	previewFiltering bool
 
 	loginForm LoginForm
 	loginErr  string
@@ -90,6 +89,14 @@ type App struct {
 	currentDatabase string
 	selectedSchema  string
 	selectedTable   string
+}
+
+func newPreviewFilter() textinput.Model {
+	pf := textinput.New()
+	pf.Prompt = "/ "
+	pf.Placeholder = "filter columns…"
+	pf.CharLimit = 64
+	return pf
 }
 
 // NewApp constructs the root model.
@@ -129,6 +136,7 @@ func NewApp(client *db.Client) *App {
 		tableList:       tableList,
 		dbList:          dbList,
 		spinner:         sp,
+		previewFilter:   newPreviewFilter(),
 		focus:           paneSchema,
 		state:           stateBrowse,
 	}
@@ -165,13 +173,14 @@ func NewAppNoClient() *App {
 	sp.Spinner = spinner.Dot
 
 	return &App{
-		schemaList: schemaList,
-		tableList:  tableList,
-		dbList:     dbList,
-		spinner:    sp,
-		focus:      paneSchema,
-		state:      stateLogin,
-		loginForm:  newLoginForm(),
+		schemaList:    schemaList,
+		tableList:     tableList,
+		dbList:        dbList,
+		spinner:       sp,
+		previewFilter: newPreviewFilter(),
+		focus:         paneSchema,
+		state:         stateLogin,
+		loginForm:     newLoginForm(),
 	}
 }
 
@@ -206,13 +215,15 @@ func (a *App) loadTables(schema string) tea.Cmd {
 	}
 }
 
-func (a *App) loadPreview(schema, tbl string) tea.Cmd {
+func (a *App) loadMeta(schema, tbl string) tea.Cmd {
 	return func() tea.Msg {
-		result, err := a.client.Preview(context.Background(), schema, tbl, 50)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		meta, err := a.client.TableMeta(ctx, schema, tbl)
 		if err != nil {
 			return errMsg{err}
 		}
-		return previewLoadedMsg{result}
+		return metaLoadedMsg{meta}
 	}
 }
 
@@ -315,21 +326,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			items[i] = item{t.Name}
 		}
 		a.tableList.SetItems(items)
-		a.previewCols = nil
-		a.previewRows = nil
+		a.previewMeta = nil
 		a.previewScroll = 0
-		a.previewInfo = ""
+		a.previewFilter.SetValue("")
+		a.previewFiltering = false
 		return a, nil
 
-	case previewLoadedMsg:
-		r := msg.result
-		a.previewCols = r.Columns
-		a.previewRows = r.Rows
+	case metaLoadedMsg:
+		a.previewMeta = msg.meta
 		a.previewScroll = 0
-		a.previewInfo = ""
-		if r.Total > 0 {
-			a.previewInfo = fmt.Sprintf("~%s rows", formatCount(r.Total))
-		}
+		a.previewFilter.SetValue("")
+		a.previewFiltering = false
 		return a, nil
 
 	case LoginSubmitMsg:
@@ -365,10 +372,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.currentDatabase = os.Getenv("PGDATABASE")
 		a.selectedSchema = ""
 		a.selectedTable = ""
-		a.previewCols = nil
-		a.previewRows = nil
+		a.previewMeta = nil
 		a.previewScroll = 0
-		a.previewInfo = ""
+		a.previewFilter.SetValue("")
 		a.tableList.SetItems(nil)
 		a.state = stateBrowse
 		return a, a.loadSchemas()
@@ -443,6 +449,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 
+		// Preview column filter: intercept all keys when active.
+		if a.focus == panePreview && a.previewFiltering {
+			switch msg.String() {
+			case "esc":
+				a.previewFiltering = false
+				a.previewFilter.SetValue("")
+				a.previewFilter.Blur()
+				return a, nil
+			case "enter":
+				a.previewFiltering = false
+				a.previewFilter.Blur()
+				return a, nil
+			}
+			var cmd tea.Cmd
+			a.previewFilter, cmd = a.previewFilter.Update(msg)
+			a.previewScroll = 0
+			return a, cmd
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			if a.focusedListFiltering() {
@@ -481,8 +506,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case paneTable:
 				if sel := selectedItemTitle(a.tableList); sel != "" {
 					a.selectedTable = sel
+					a.previewMeta = nil
+					a.previewScroll = 0
+					a.previewFilter.SetValue("")
 					a.focus = panePreview
-					return a, a.loadPreview(a.selectedSchema, sel)
+					return a, a.loadMeta(a.selectedSchema, sel)
 				}
 			}
 			return a, nil
@@ -523,7 +551,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 
-		// All other keys (including enter, /, letters) go to the focused list/table.
+		// All other keys (including enter, /, letters) go to the focused list/pane.
 		var cmd tea.Cmd
 		switch a.focus {
 		case paneSchema:
@@ -532,8 +560,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.tableList, cmd = a.tableList.Update(msg)
 		case panePreview:
 			switch msg.String() {
+			case "/":
+				a.previewFiltering = true
+				a.previewFilter.Focus()
+				cmd = textinput.Blink
 			case "j", "down":
-				if a.previewScroll < len(a.previewRows)-1 {
+				cols := a.filteredColumns()
+				if a.previewScroll < len(cols)-1 {
 					a.previewScroll++
 				}
 			case "k", "up":
@@ -542,6 +575,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		return a, cmd
+	}
+
+	// Forward cursor blink messages to the active text input.
+	if a.previewFiltering {
+		var cmd tea.Cmd
+		a.previewFilter, cmd = a.previewFilter.Update(msg)
 		return a, cmd
 	}
 
@@ -656,35 +696,103 @@ func (a *App) renderPreviewPanel(w, h int) string {
 	}
 	sb.WriteString(stylePanelHeader.Render(label) + "\n")
 
-	if len(a.previewCols) > 0 {
-		t := table.New().
-			Headers(a.previewCols...).
-			Rows(a.previewRows...).
-			Border(lipgloss.NormalBorder()).
-			BorderStyle(lipgloss.NewStyle().Foreground(colorMuted)).
-			BorderRow(false).
-			BorderColumn(true).
-			BorderHeader(true).
-			Width(w - 4).
-			Height(h - 4).
-			Offset(a.previewScroll).
-			StyleFunc(func(row, col int) lipgloss.Style {
-				if row == table.HeaderRow {
-					return styleCellHeader
-				}
-				if row%2 == 0 {
-					return styleCellNormal.Foreground(lipgloss.Color("#D1D5DB"))
-				}
-				return styleCellNormal
-			})
-		sb.WriteString(t.Render())
-		if a.previewInfo != "" {
-			sb.WriteString("\n" + styleRowCount.Render(a.previewInfo))
+	contentW := w - 4 // panel border + internal padding
+
+	if a.previewMeta != nil {
+		meta := a.previewMeta
+
+		// Stats line: "~245.3M rows · 1.2 GB"
+		var stats []string
+		if meta.RowCount > 0 {
+			stats = append(stats, "~"+formatCount(meta.RowCount)+" rows")
 		}
+		if meta.Size != "" {
+			stats = append(stats, meta.Size)
+		}
+		if len(stats) > 0 {
+			sb.WriteString(styleRowCount.Render(strings.Join(stats, " · ")) + "\n")
+		}
+		if meta.Comment != "" {
+			sb.WriteString(styleStatusBar.Render(meta.Comment) + "\n")
+		}
+
+		// Filter bar
+		if a.previewFiltering {
+			sb.WriteString(a.previewFilter.View() + "\n")
+		} else if a.previewFilter.Value() != "" {
+			sb.WriteString(styleStatusBar.Render("/ "+a.previewFilter.Value()) + "\n")
+		}
+
+		cols := a.filteredColumns()
+
+		if len(cols) > 0 {
+			// Calculate column widths from data.
+			nameW, typeW := len("Column"), len("Type")
+			for _, c := range cols {
+				if len(c.Name) > nameW {
+					nameW = len(c.Name)
+				}
+				if len(c.DataType) > typeW {
+					typeW = len(c.DataType)
+				}
+			}
+			if nameW > 22 {
+				nameW = 22
+			}
+			if typeW > 20 {
+				typeW = 20
+			}
+			descW := contentW - nameW - typeW - 4 // 2-char gaps
+			if descW < 8 {
+				descW = 8
+			}
+
+			// Column header
+			hdr := fmt.Sprintf("%-*s  %-*s  %-*s", nameW, "Column", typeW, "Type", descW, "Description")
+			sb.WriteString(styleCellHeader.Render(truncStr(hdr, contentW)) + "\n")
+			sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", contentW)) + "\n")
+
+			// How many rows fit?
+			usedLines := lipgloss.Height(sb.String())
+			footerLines := 1
+			availRows := h - usedLines - footerLines - 2
+			if availRows < 1 {
+				availRows = 1
+			}
+
+			start := a.previewScroll
+			end := start + availRows
+			if end > len(cols) {
+				end = len(cols)
+			}
+
+			for i := start; i < end; i++ {
+				c := cols[i]
+				line := fmt.Sprintf("%-*s  %-*s  %s",
+					nameW, truncStr(c.Name, nameW),
+					typeW, truncStr(c.DataType, typeW),
+					truncStr(c.Description, descW))
+				style := styleCellNormal
+				if i%2 == 0 {
+					style = style.Foreground(lipgloss.Color("#D1D5DB"))
+				}
+				sb.WriteString(style.Render(line) + "\n")
+			}
+		}
+
+		// Column count footer
+		total := len(meta.Columns)
+		shown := len(cols)
+		countStr := fmt.Sprintf("%d columns", total)
+		if shown < total {
+			countStr = fmt.Sprintf("%d/%d columns", shown, total)
+		}
+		sb.WriteString(styleRowCount.Render(countStr))
+
 	} else if a.selectedTable != "" {
 		sb.WriteString(styleStatusBar.Render("Loading…"))
 	} else {
-		sb.WriteString(styleStatusBar.Render("Select a table to preview rows"))
+		sb.WriteString(styleStatusBar.Render("Select a table to preview"))
 	}
 
 	style := stylePanelBlurred
@@ -718,6 +826,25 @@ func (a *App) focusedListFiltering() bool {
 	return false
 }
 
+// filteredColumns returns the columns matching the current filter text.
+func (a *App) filteredColumns() []db.ColumnMeta {
+	if a.previewMeta == nil {
+		return nil
+	}
+	filter := strings.ToLower(a.previewFilter.Value())
+	if filter == "" {
+		return a.previewMeta.Columns
+	}
+	var out []db.ColumnMeta
+	for _, col := range a.previewMeta.Columns {
+		if strings.Contains(strings.ToLower(col.Name), filter) ||
+			strings.Contains(strings.ToLower(col.Description), filter) {
+			out = append(out, col)
+		}
+	}
+	return out
+}
+
 // Err returns the last error message (login or status), if any.
 func (a *App) Err() string {
 	if a.loginErr != "" {
@@ -733,6 +860,17 @@ func selectedItemTitle(l list.Model) string {
 		return sel.(item).title
 	}
 	return ""
+}
+
+func truncStr(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max <= 1 {
+		return "…"
+	}
+	return string(r[:max-1]) + "…"
 }
 
 func formatCount(n int64) string {
