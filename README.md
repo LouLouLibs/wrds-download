@@ -16,7 +16,7 @@ A terminal tool for browsing and downloading data from the [WRDS](https://wrds-w
 
 ### Pre-built binaries (recommended)
 
-Download the latest release from the [Releases page](https://github.com/eloualiche/wrds-download/releases):
+Download the latest release from the [Releases page](https://github.com/louloulibs/wrds-download/releases):
 
 | Platform | Binary |
 |---|---|
@@ -27,7 +27,7 @@ Download the latest release from the [Releases page](https://github.com/eloualic
 
 ```sh
 # macOS example
-curl -L https://github.com/eloualiche/wrds-download/releases/latest/download/wrds-dl-darwin-arm64 \
+curl -L https://github.com/louloulibs/wrds-download/releases/latest/download/wrds-dl-darwin-arm64 \
   -o /usr/local/bin/wrds-dl
 chmod +x /usr/local/bin/wrds-dl
 ```
@@ -37,7 +37,7 @@ chmod +x /usr/local/bin/wrds-dl
 Requires Go 1.25+. No CGo or C compiler needed.
 
 ```sh
-git clone https://github.com/eloualiche/wrds-download
+git clone https://github.com/louloulibs/wrds-download
 cd wrds-download
 CGO_ENABLED=0 go build -ldflags="-s -w" -o wrds-dl .
 mv wrds-dl /usr/local/bin/

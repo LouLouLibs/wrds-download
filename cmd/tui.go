@@ -5,8 +5,8 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/eloualiche/wrds-download/internal/config"
-	"github.com/eloualiche/wrds-download/internal/tui"
+	"github.com/louloulibs/wrds-download/internal/config"
+	"github.com/louloulibs/wrds-download/internal/tui"
 	"github.com/spf13/cobra"
 )
 

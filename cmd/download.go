@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/eloualiche/wrds-download/internal/config"
-	"github.com/eloualiche/wrds-download/internal/export"
+	"github.com/louloulibs/wrds-download/internal/config"
+	"github.com/louloulibs/wrds-download/internal/export"
 	"github.com/spf13/cobra"
 )
 
