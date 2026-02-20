@@ -2,6 +2,22 @@
 
 A terminal tool for browsing and downloading data from the [WRDS](https://wrds-www.wharton.upenn.edu/) PostgreSQL database. Comes with an interactive TUI for exploration and a CLI for scripted downloads. Output is Parquet or CSV — pure Go, no CGo, cross-platform.
 
+## Claude Code skill
+
+A bundled [Claude Code](https://claude.com/claude-code) skill lets you download WRDS data using natural language:
+
+```
+/wrds-download CRSP daily stock data for 2020
+```
+
+Claude will inspect the table, show you the structure, do a dry run for large tables, and download to Parquet. Install by copying the skill into your project or personal skills directory:
+
+```sh
+cp -r claude-skill-wrds-download ~/.claude/skills/wrds-download
+```
+
+See [`claude-skill-wrds-download/`](claude-skill-wrds-download/) for details.
+
 ## Features
 
 - **TUI** — browse schemas and tables, inspect column metadata, trigger downloads without leaving the terminal
@@ -220,28 +236,6 @@ For machine-readable output (useful in scripts and coding assistants):
 ```sh
 wrds-dl info --schema crsp --table dsf --json
 ```
-
-## Claude Code skill
-
-A bundled [Claude Code](https://claude.com/claude-code) skill lets you download WRDS data using natural language:
-
-```
-/wrds-download CRSP daily stock data for 2020
-```
-
-Claude will inspect the table, show you the structure, do a dry run for large tables, and download to Parquet.
-
-To install, copy the skill into your project or personal skills directory:
-
-```sh
-# Project-level (committed to repo)
-cp -r claude-skill-wrds-download .claude/skills/wrds-download
-
-# Personal (all your projects)
-cp -r claude-skill-wrds-download ~/.claude/skills/wrds-download
-```
-
-See [`claude-skill-wrds-download/README.md`](claude-skill-wrds-download/README.md) for details.
 
 ## How it works
 
