@@ -1,14 +1,16 @@
 # wrds-dl
 
-A terminal tool for browsing and downloading data from the [WRDS](https://wrds-www.wharton.upenn.edu/) PostgreSQL database. Comes with an interactive TUI for exploration and a CLI for scripted downloads. Output is Parquet (via DuckDB) or CSV.
+A terminal tool for browsing and downloading data from the [WRDS](https://wrds-www.wharton.upenn.edu/) PostgreSQL database. Comes with an interactive TUI for exploration and a CLI for scripted downloads. Output is Parquet or CSV — pure Go, no CGo, cross-platform.
 
 ## Features
 
-- **TUI** — browse schemas and tables, preview rows, trigger downloads without leaving the terminal
+- **TUI** — browse schemas and tables, inspect column metadata, trigger downloads without leaving the terminal
 - **CLI** — scriptable `download` command with structured flags or raw SQL
-- **Parquet output** — uses DuckDB's `postgres_scanner` for fast, efficient export with ZSTD compression
-- **CSV output** — plain CSV alternative via the same DuckDB pipeline
-- **Standard auth** — reads from `PG*` environment variables or `~/.pgpass`, no configuration file needed
+- **Parquet output** — streams rows via pgx and writes Parquet with ZSTD compression using parquet-go (pure Go)
+- **CSV output** — streams rows to CSV via encoding/csv
+- **Login flow** — interactive login screen with Duo 2FA support; saved credentials for one-press reconnect
+- **Database switching** — browse and switch between WRDS databases from within the TUI
+- **Standard auth** — reads from `PG*` environment variables, `~/.config/wrds-dl/credentials`, or `~/.pgpass`
 
 ## Installation
 
@@ -19,7 +21,9 @@ Download the latest release from the [Releases page](https://github.com/eloualic
 | Platform | Binary |
 |---|---|
 | macOS (Apple Silicon) | `wrds-dl-darwin-arm64` |
+| macOS (Intel) | `wrds-dl-darwin-amd64` |
 | Linux x86-64 | `wrds-dl-linux-amd64` |
+| Windows x86-64 | `wrds-dl-windows-amd64.exe` |
 
 ```sh
 # macOS example
@@ -30,31 +34,52 @@ chmod +x /usr/local/bin/wrds-dl
 
 ### Build from source
 
-Requires Go 1.21+, CGo, and a C++ compiler (`gcc-c++` on Linux, Xcode CLT on macOS).
+Requires Go 1.25+. No CGo or C compiler needed.
 
 ```sh
 git clone https://github.com/eloualiche/wrds-download
 cd wrds-download
-go build -o wrds-dl .
+CGO_ENABLED=0 go build -ldflags="-s -w" -o wrds-dl .
 mv wrds-dl /usr/local/bin/
 ```
 
 ## Authentication
 
-`wrds-dl` uses the standard PostgreSQL environment variables. Set them before running:
+WRDS uses Duo two-factor authentication. The TUI always starts on a login screen so you control when the connection (and Duo push) fires.
+
+### Option 1: Environment variables
+
+Set the standard PostgreSQL environment variables before running:
+
+```sh
+export PGUSER=your_username
+export PGPASSWORD=your_password
+```
+
+Optional (defaults shown):
 
 ```sh
 export PGHOST=wrds-pgdata.wharton.upenn.edu
 export PGPORT=9737
-export PGUSER=your_username
-export PGPASSWORD=your_password
-export PGDATABASE=your_username   # on WRDS, database name = username
+export PGDATABASE=wrds
 ```
 
-Alternatively, store credentials in `~/.pgpass` (no `PGPASSWORD` needed):
+### Option 2: Saved credentials
+
+On first login via the TUI, check "Save to ~/.config/wrds-dl/credentials". On subsequent launches, press `enter` on the "Login as ..." button. The credentials file is stored at `~/.config/wrds-dl/credentials` (or `$XDG_CONFIG_HOME/wrds-dl/credentials`) with `0600` permissions:
 
 ```
-wrds-pgdata.wharton.upenn.edu:9737:your_username:your_username:your_password
+PGUSER=your_username
+PGPASSWORD=your_password
+PGDATABASE=wrds
+```
+
+### Option 3: ~/.pgpass
+
+Standard PostgreSQL password file:
+
+```
+wrds-pgdata.wharton.upenn.edu:9737:*:your_username:your_password
 ```
 
 ## TUI
@@ -65,32 +90,33 @@ Launch the interactive browser:
 wrds-dl tui
 ```
 
-```
-┌─ WRDS ──────────────────────────────────────────────────────────┐
-│ Schemas         │ Tables (crsp)      │ Preview: crsp.dsf         │
-│ ─────────────   │ ─────────────────  │ ──────────────────────    │
-│ > crsp          │ > dsf              │ permno  date       prc    │
-│   comp          │   mse              │ 10001   2020-01-02 45.23  │
-│   ibes          │   ccm_final        │ 10001   2020-01-03 47.11  │
-│   optionm       │   ...              │ ...                       │
-│   ...           │                    │ ~2.1M rows                │
-│                 │                    │                           │
-│ [tab] switch pane  [d] download  [/] filter  [q] quit            │
-└─────────────────────────────────────────────────────────────────┘
-```
+The TUI has three panes: **Schemas**, **Tables**, and **Preview** (column catalog with types, descriptions, and table stats).
 
 ### Keybindings
 
 | Key | Action |
 |---|---|
 | `tab` / `shift+tab` | Cycle focus between panes |
-| `enter` | Drill into schema or table |
+| `right` / `l` | Drill into selected schema or table |
+| `left` / `h` | Go back one pane |
 | `d` | Open download dialog for the selected table |
-| `/` | Filter list |
-| `esc` | Cancel / dismiss |
+| `b` | Switch database |
+| `/` | Filter current list (schemas, tables, or columns) |
+| `esc` | Cancel / dismiss overlay |
 | `q` / `ctrl+c` | Quit |
 
-In the download dialog, `tab` moves between fields and `enter` on the last field confirms.
+### Download dialog
+
+Press `d` on a selected table to open the download form:
+
+| Field | Description |
+|---|---|
+| SELECT columns | Comma-separated column names, or `*` for all |
+| WHERE clause | SQL filter without the `WHERE` keyword |
+| Output path | File path; defaults to `./schema_table.parquet` |
+| Format | `parquet` or `csv` |
+
+Navigate with `tab`/`shift+tab`, confirm with `enter` on the last field.
 
 ## CLI
 
@@ -102,6 +128,16 @@ wrds-dl download \
   --table dsf \
   --where "date >= '2020-01-01' AND date < '2021-01-01'" \
   --out crsp_dsf_2020.parquet
+```
+
+### Select specific columns
+
+```sh
+wrds-dl download \
+  --schema comp \
+  --table funda \
+  --columns "gvkey,datadate,sale,at" \
+  --out funda_subset.parquet
 ```
 
 ### Raw SQL
@@ -121,32 +157,64 @@ wrds-dl download \
   --out funda.csv
 ```
 
-Format is inferred from the output file extension (`.parquet` → Parquet, `.csv` → CSV). Override with `--format`.
+Format is inferred from the output file extension (`.parquet` or `.csv`). Override with `--format`.
 
-### Flags
+### All flags
 
 | Flag | Description |
 |---|---|
 | `--schema` | Schema name (e.g. `crsp`, `comp`) |
 | `--table` | Table name (e.g. `dsf`, `funda`) |
-| `--where` | SQL `WHERE` clause, without the keyword (e.g. `date > '2020-01-01'`) |
-| `--query` | Full SQL query — overrides `--schema`, `--table`, `--where` |
+| `-c`, `--columns` | Columns to select (comma-separated, default `*`) |
+| `--where` | SQL `WHERE` clause, without the keyword |
+| `--query` | Full SQL query — overrides `--schema`, `--table`, `--where`, `--columns` |
 | `--out` | Output file path (required) |
 | `--format` | `parquet` or `csv` (inferred from extension if omitted) |
 | `--limit` | Row limit, useful for testing (default: no limit) |
 
 ## How it works
 
-- **Metadata** (schema/table/column listing, row preview) uses a `pgx` connection pool talking directly to the WRDS PostgreSQL server.
-- **Downloads** use [DuckDB](https://duckdb.org/) with the `postgres_scanner` extension. DuckDB attaches to WRDS as a read-only source and streams data directly into Parquet or CSV without loading it all into memory first.
+`wrds-dl` connects directly to the WRDS PostgreSQL server using [pgx](https://github.com/jackc/pgx). All operations — metadata browsing, column inspection, and data download — go through a single pooled connection (limited to 1 to avoid triggering multiple Duo 2FA prompts).
+
+**Downloads** stream rows from Postgres and write them incrementally:
+- **Parquet**: rows are batched (10,000 per row group) and written with ZSTD compression via [parquet-go](https://github.com/parquet-go/parquet-go). String columns use PLAIN encoding for broad compatibility (R, Python, Julia).
+- **CSV**: rows are streamed directly to disk via Go's `encoding/csv`.
+
+PostgreSQL types are mapped to Parquet types: `bool` → BOOLEAN, `int2/int4` → INT32, `int8` → INT64, `float4` → FLOAT, `float8` → DOUBLE, `date` → DATE, `timestamp/timestamptz` → TIMESTAMP (microseconds), `numeric` → STRING, `text/varchar/char` → STRING.
+
+## Project structure
+
+```
+wrds-download/
+├── main.go                    # entrypoint
+├── cmd/
+│   ├── root.go                # cobra root command
+│   ├── tui.go                 # `wrds-dl tui` — launches interactive browser
+│   └── download.go            # `wrds-dl download` — CLI download command
+├── internal/
+│   ├── db/
+│   │   ├── client.go          # pgx pool, DSN construction, connection management
+│   │   └── meta.go            # schema/table/column queries against pg_catalog
+│   ├── export/
+│   │   └── export.go          # Export() — pgx streaming → parquet-go / csv writer
+│   ├── tui/
+│   │   ├── app.go             # root Bubble Tea model, Update/View, pane navigation
+│   │   ├── loginform.go       # login dialog with saved-credentials support
+│   │   ├── dlform.go          # download dialog (columns, where, output, format)
+│   │   └── styles.go          # lipgloss styles and colors
+│   └── config/
+│       └── config.go          # credentials file read/write (~/.config/wrds-dl/)
+└── .github/workflows/
+    └── release.yml            # CI: cross-compile 4 targets, attach to GitHub Release
+```
 
 ## Dependencies
 
 | Package | Purpose |
 |---|---|
-| `charmbracelet/bubbletea` | TUI framework |
-| `charmbracelet/bubbles` | List, table, text-input, spinner components |
-| `charmbracelet/lipgloss` | Layout and styling |
-| `jackc/pgx/v5` | PostgreSQL driver for metadata and preview |
-| `spf13/cobra` | CLI commands and flags |
-| `marcboeker/go-duckdb` | Parquet/CSV export via `postgres_scanner` |
+| [`jackc/pgx/v5`](https://github.com/jackc/pgx) | PostgreSQL driver — all queries and data streaming |
+| [`parquet-go/parquet-go`](https://github.com/parquet-go/parquet-go) | Parquet file writing with ZSTD compression (pure Go) |
+| [`charmbracelet/bubbletea`](https://github.com/charmbracelet/bubbletea) | TUI framework |
+| [`charmbracelet/bubbles`](https://github.com/charmbracelet/bubbles) | List, text-input, spinner components |
+| [`charmbracelet/lipgloss`](https://github.com/charmbracelet/lipgloss) | Terminal layout and styling |
+| [`spf13/cobra`](https://github.com/spf13/cobra) | CLI commands and flags |
