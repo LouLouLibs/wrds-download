@@ -83,7 +83,7 @@ func buildQuery() (string, error) {
 	if dlColumns != "" && dlColumns != "*" {
 		sel = dlColumns
 	}
-	q := fmt.Sprintf("SELECT %s FROM wrds.%s.%s", sel, dlSchema, dlTable)
+	q := fmt.Sprintf("SELECT %s FROM %s.%s", sel, dlSchema, dlTable)
 
 	if dlWhere != "" {
 		q += " WHERE " + dlWhere

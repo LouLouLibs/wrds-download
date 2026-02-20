@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -39,16 +38,6 @@ func DSNFromEnv() (string, error) {
 		dsn += fmt.Sprintf(" dbname=%s", database)
 	}
 	return dsn, nil
-}
-
-// PortFromEnv returns the port as an integer (for DuckDB attach).
-func PortFromEnv() int {
-	p := getenv("PGPORT", "9737")
-	n, _ := strconv.Atoi(p)
-	if n == 0 {
-		n = 9737
-	}
-	return n
 }
 
 func getenv(key, fallback string) string {

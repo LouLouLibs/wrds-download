@@ -233,7 +233,7 @@ func (a *App) startDownload(msg DlSubmitMsg) tea.Cmd {
 		if msg.Columns != "" && msg.Columns != "*" {
 			sel = msg.Columns
 		}
-		query := fmt.Sprintf("SELECT %s FROM wrds.%s.%s", sel, msg.Schema, msg.Table)
+		query := fmt.Sprintf("SELECT %s FROM %s.%s", sel, msg.Schema, msg.Table)
 		if msg.Where != "" {
 			query += " WHERE " + msg.Where
 		}
