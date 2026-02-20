@@ -11,13 +11,14 @@ import (
 )
 
 var (
-	dlSchema string
-	dlTable  string
-	dlWhere  string
-	dlQuery  string
-	dlOut    string
-	dlFormat string
-	dlLimit  int
+	dlSchema  string
+	dlTable   string
+	dlColumns string
+	dlWhere   string
+	dlQuery   string
+	dlOut     string
+	dlFormat  string
+	dlLimit   int
 )
 
 var downloadCmd = &cobra.Command{
@@ -27,6 +28,7 @@ var downloadCmd = &cobra.Command{
 
 Examples:
   wrds download --schema crsp --table dsf --where "date='2020-01-02'" --out crsp_dsf.parquet
+  wrds download --schema comp --table funda --columns "gvkey,datadate,sale" --out funda.parquet
   wrds download --query "SELECT permno, date, prc FROM crsp.dsf LIMIT 1000" --out out.parquet
   wrds download --schema comp --table funda --out funda.csv --format csv`,
 	RunE: runDownload,
@@ -38,6 +40,7 @@ func init() {
 	f := downloadCmd.Flags()
 	f.StringVar(&dlSchema, "schema", "", "Schema name (e.g. crsp)")
 	f.StringVar(&dlTable, "table", "", "Table name (e.g. dsf)")
+	f.StringVarP(&dlColumns, "columns", "c", "*", "Columns to select (comma-separated, default *)")
 	f.StringVar(&dlWhere, "where", "", "SQL WHERE clause (without the WHERE keyword)")
 	f.StringVar(&dlQuery, "query", "", "Full SQL query (overrides --schema/--table/--where)")
 	f.StringVar(&dlOut, "out", "", "Output file path (required)")
@@ -76,7 +79,11 @@ func buildQuery() (string, error) {
 		return "", fmt.Errorf("either --query or both --schema and --table must be specified")
 	}
 
-	q := fmt.Sprintf("SELECT * FROM wrds.%s.%s", dlSchema, dlTable)
+	sel := "*"
+	if dlColumns != "" && dlColumns != "*" {
+		sel = dlColumns
+	}
+	q := fmt.Sprintf("SELECT %s FROM wrds.%s.%s", sel, dlSchema, dlTable)
 
 	if dlWhere != "" {
 		q += " WHERE " + dlWhere

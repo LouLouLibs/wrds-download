@@ -229,11 +229,13 @@ func (a *App) loadMeta(schema, tbl string) tea.Cmd {
 
 func (a *App) startDownload(msg DlSubmitMsg) tea.Cmd {
 	return func() tea.Msg {
-		var query string
+		sel := "*"
+		if msg.Columns != "" && msg.Columns != "*" {
+			sel = msg.Columns
+		}
+		query := fmt.Sprintf("SELECT %s FROM wrds.%s.%s", sel, msg.Schema, msg.Table)
 		if msg.Where != "" {
-			query = fmt.Sprintf("SELECT * FROM wrds.%s.%s WHERE %s", msg.Schema, msg.Table, msg.Where)
-		} else {
-			query = fmt.Sprintf("SELECT * FROM wrds.%s.%s", msg.Schema, msg.Table)
+			query += " WHERE " + msg.Where
 		}
 		err := export.Export(query, msg.Out, export.Options{Format: msg.Format})
 		if err != nil {
@@ -529,7 +531,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			if a.selectedSchema != "" && a.selectedTable != "" {
-				a.dlForm = newDlForm(a.selectedSchema, a.selectedTable)
+				var colNames []string
+				if a.previewMeta != nil {
+					for _, c := range a.previewMeta.Columns {
+						colNames = append(colNames, c.Name)
+					}
+				}
+				a.dlForm = newDlForm(a.selectedSchema, a.selectedTable, colNames)
 				a.state = stateDownloadForm
 				return a, nil
 			}

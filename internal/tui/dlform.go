@@ -12,7 +12,8 @@ import (
 type dlFormField int
 
 const (
-	fieldWhere dlFormField = iota
+	fieldSelect dlFormField = iota
+	fieldWhere
 	fieldOut
 	fieldFormat
 	fieldCount
@@ -29,18 +30,32 @@ type DlForm struct {
 
 // DlSubmitMsg is sent when the user confirms the download form.
 type DlSubmitMsg struct {
-	Schema string
-	Table  string
-	Where  string
-	Out    string
-	Format string
+	Schema  string
+	Table   string
+	Columns string
+	Where   string
+	Out     string
+	Format  string
 }
 
 // DlCancelMsg is sent when the user cancels.
 type DlCancelMsg struct{}
 
-func newDlForm(schema, table string) DlForm {
+func newDlForm(schema, table string, colNames []string) DlForm {
 	f := DlForm{schema: schema, table: table}
+
+	f.inputs[fieldSelect] = textinput.New()
+	placeholder := "e.g. gvkey, datadate, sale"
+	if len(colNames) > 0 {
+		hint := strings.Join(colNames, ", ")
+		if len(hint) > 60 {
+			hint = hint[:57] + "..."
+		}
+		placeholder = "e.g. " + hint
+	}
+	f.inputs[fieldSelect].Placeholder = placeholder
+	f.inputs[fieldSelect].CharLimit = 1024
+	f.inputs[fieldSelect].SetValue("*")
 
 	f.inputs[fieldWhere] = textinput.New()
 	f.inputs[fieldWhere].Placeholder = "e.g. date >= '2020-01-01'"
@@ -56,7 +71,7 @@ func newDlForm(schema, table string) DlForm {
 	f.inputs[fieldFormat].CharLimit = 10
 	f.inputs[fieldFormat].SetValue("parquet")
 
-	f.inputs[fieldWhere].Focus()
+	f.inputs[fieldSelect].Focus()
 	return f
 }
 
@@ -82,13 +97,18 @@ func (f DlForm) Update(msg tea.Msg) (DlForm, tea.Cmd) {
 			if format == "" {
 				format = "parquet"
 			}
+			columns := strings.TrimSpace(f.inputs[fieldSelect].Value())
+			if columns == "" {
+				columns = "*"
+			}
 			return f, func() tea.Msg {
 				return DlSubmitMsg{
-					Schema: f.schema,
-					Table:  f.table,
-					Where:  f.inputs[fieldWhere].Value(),
-					Out:    out,
-					Format: format,
+					Schema:  f.schema,
+					Table:   f.table,
+					Columns: columns,
+					Where:   f.inputs[fieldWhere].Value(),
+					Out:     out,
+					Format:  format,
 				}
 			}
 		case "tab", "down":
@@ -115,7 +135,7 @@ func (f DlForm) View(width int) string {
 	title := stylePanelHeader.Render(fmt.Sprintf("Download  %s.%s", f.schema, f.table))
 	sb.WriteString(title + "\n\n")
 
-	labels := []string{"WHERE clause", "Output path", "Format (parquet/csv)"}
+	labels := []string{"SELECT columns", "WHERE clause", "Output path", "Format (parquet/csv)"}
 	for i, label := range labels {
 		style := lipgloss.NewStyle().Foreground(colorMuted)
 		if dlFormField(i) == f.focused {
