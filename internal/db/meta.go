@@ -23,6 +23,24 @@ type Column struct {
 	DataType string
 }
 
+// ColumnMeta holds catalog metadata about a single column.
+type ColumnMeta struct {
+	Name        string
+	DataType    string
+	Nullable    bool
+	Description string // from pg_description (WRDS variable label)
+}
+
+// TableMeta holds catalog metadata for a table (no data scan required).
+type TableMeta struct {
+	Schema   string
+	Table    string
+	Comment  string // table-level comment from pg_description
+	RowCount int64  // estimated from pg_class.reltuples
+	Size     string // human-readable, from pg_size_pretty
+	Columns  []ColumnMeta
+}
+
 // PreviewResult holds sample rows and row count for a table.
 type PreviewResult struct {
 	Columns []string
@@ -104,6 +122,51 @@ func (c *Client) Columns(ctx context.Context, schema, table string) ([]Column, e
 		cols = append(cols, col)
 	}
 	return cols, rows.Err()
+}
+
+// TableMeta fetches catalog metadata for a table: column info with
+// descriptions, estimated row count, and table size. All queries hit
+// pg_catalog only — no table data is scanned.
+func (c *Client) TableMeta(ctx context.Context, schema, table string) (*TableMeta, error) {
+	meta := &TableMeta{Schema: schema, Table: table}
+
+	// Table-level stats (best effort — some may require permissions).
+	_ = c.Pool.QueryRow(ctx, `
+		SELECT c.reltuples::bigint,
+		       COALESCE(pg_size_pretty(pg_total_relation_size(c.oid)), ''),
+		       COALESCE(obj_description(c.oid), '')
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = $1 AND c.relname = $2
+	`, schema, table).Scan(&meta.RowCount, &meta.Size, &meta.Comment)
+
+	// Column metadata with descriptions from pg_description.
+	rows, err := c.Pool.Query(ctx, `
+		SELECT a.attname,
+		       pg_catalog.format_type(a.atttypid, a.atttypmod),
+		       NOT a.attnotnull,
+		       COALESCE(d.description, '')
+		FROM pg_attribute a
+		JOIN pg_class c ON a.attrelid = c.oid
+		JOIN pg_namespace n ON c.relnamespace = n.oid
+		LEFT JOIN pg_description d ON d.objoid = c.oid AND d.objsubid = a.attnum
+		WHERE n.nspname = $1 AND c.relname = $2
+		  AND a.attnum > 0 AND NOT a.attisdropped
+		ORDER BY a.attnum
+	`, schema, table)
+	if err != nil {
+		return nil, fmt.Errorf("table meta: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var col ColumnMeta
+		if err := rows.Scan(&col.Name, &col.DataType, &col.Nullable, &col.Description); err != nil {
+			return nil, err
+		}
+		meta.Columns = append(meta.Columns, col)
+	}
+	return meta, rows.Err()
 }
 
 // Preview fetches the first `limit` rows and an estimated row count.
