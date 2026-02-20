@@ -45,6 +45,7 @@ type tablesLoadedMsg struct{ tables []db.Table }
 type metaLoadedMsg struct{ meta *db.TableMeta }
 type errMsg struct{ err error }
 type downloadDoneMsg struct{ path string }
+type downloadProgressMsg struct{ rows int }
 type tickMsg time.Time
 type loginSuccessMsg struct{ client *db.Client }
 type loginFailMsg struct{ err error }
@@ -89,6 +90,8 @@ type App struct {
 	currentDatabase string
 	selectedSchema  string
 	selectedTable   string
+	downloadRows    int
+	dlProgressCh    chan int
 }
 
 func newPreviewFilter() textinput.Model {
@@ -228,21 +231,52 @@ func (a *App) loadMeta(schema, tbl string) tea.Cmd {
 }
 
 func (a *App) startDownload(msg DlSubmitMsg) tea.Cmd {
-	return func() tea.Msg {
+	progressCh := make(chan int, 1)
+	a.dlProgressCh = progressCh
+
+	download := func() tea.Msg {
 		sel := "*"
 		if msg.Columns != "" && msg.Columns != "*" {
-			sel = msg.Columns
+			parts := strings.Split(msg.Columns, ",")
+			quoted := make([]string, len(parts))
+			for i, p := range parts {
+				quoted[i] = db.QuoteIdent(strings.TrimSpace(p))
+			}
+			sel = strings.Join(quoted, ", ")
 		}
-		query := fmt.Sprintf("SELECT %s FROM %s.%s", sel, msg.Schema, msg.Table)
+		query := fmt.Sprintf("SELECT %s FROM %s.%s", sel, db.QuoteIdent(msg.Schema), db.QuoteIdent(msg.Table))
 		if msg.Where != "" {
 			query += " WHERE " + msg.Where
 		}
-		err := export.Export(query, msg.Out, export.Options{Format: msg.Format})
+		if msg.Limit > 0 {
+			query += fmt.Sprintf(" LIMIT %d", msg.Limit)
+		}
+		opts := export.Options{
+			Format: msg.Format,
+			ProgressFunc: func(rows int) {
+				select {
+				case progressCh <- rows:
+				default:
+				}
+			},
+		}
+		err := export.Export(query, msg.Out, opts)
+		close(progressCh)
 		if err != nil {
 			return errMsg{err}
 		}
 		return downloadDoneMsg{msg.Out}
 	}
+
+	listenProgress := func() tea.Msg {
+		rows, ok := <-progressCh
+		if !ok {
+			return nil
+		}
+		return downloadProgressMsg{rows}
+	}
+
+	return tea.Batch(download, listenProgress)
 }
 
 func (a *App) attemptLogin(msg LoginSubmitMsg) tea.Cmd {
@@ -391,9 +425,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.state = stateBrowse
 		return a, nil
 
+	case downloadProgressMsg:
+		a.downloadRows = msg.rows
+		// Keep listening for more progress updates.
+		ch := a.dlProgressCh
+		return a, func() tea.Msg {
+			rows, ok := <-ch
+			if !ok {
+				return nil
+			}
+			return downloadProgressMsg{rows}
+		}
+
 	case downloadDoneMsg:
 		a.statusOK = fmt.Sprintf("Saved: %s", msg.path)
 		a.state = stateDone
+		a.downloadRows = 0
 		return a, nil
 
 	case DlCancelMsg:
@@ -404,6 +451,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.state = stateDownloading
 		a.statusErr = ""
 		a.statusOK = ""
+		a.downloadRows = 0
 		return a, tea.Batch(a.startDownload(msg), a.spinner.Tick)
 
 	case list.FilterMatchesMsg:
@@ -648,8 +696,11 @@ func (a *App) View() string {
 		return overlayCenter(full, overlay, a.width, a.height)
 	}
 	if a.state == stateDownloading {
-		msg := a.spinner.View() + "  Downloading…"
-		return overlayCenter(full, stylePanelFocused.Padding(1, 3).Render(msg), a.width, a.height)
+		dlMsg := a.spinner.View() + "  Downloading…"
+		if a.downloadRows > 0 {
+			dlMsg = a.spinner.View() + fmt.Sprintf("  Downloading… %s rows exported", formatCount(int64(a.downloadRows)))
+		}
+		return overlayCenter(full, stylePanelFocused.Padding(1, 3).Render(dlMsg), a.width, a.height)
 	}
 	if a.state == stateDone {
 		msg := styleSuccess.Render("✓ ") + a.statusOK + "\n\n" + styleStatusBar.Render("[esc] dismiss")

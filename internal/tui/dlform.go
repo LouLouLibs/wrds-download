@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -14,6 +15,7 @@ type dlFormField int
 const (
 	fieldSelect dlFormField = iota
 	fieldWhere
+	fieldLimit
 	fieldOut
 	fieldFormat
 	fieldCount
@@ -34,6 +36,7 @@ type DlSubmitMsg struct {
 	Table   string
 	Columns string
 	Where   string
+	Limit   int
 	Out     string
 	Format  string
 }
@@ -60,6 +63,10 @@ func newDlForm(schema, table string, colNames []string) DlForm {
 	f.inputs[fieldWhere] = textinput.New()
 	f.inputs[fieldWhere].Placeholder = "e.g. date >= '2020-01-01'"
 	f.inputs[fieldWhere].CharLimit = 512
+
+	f.inputs[fieldLimit] = textinput.New()
+	f.inputs[fieldLimit].Placeholder = "no limit"
+	f.inputs[fieldLimit].CharLimit = 12
 
 	f.inputs[fieldOut] = textinput.New()
 	f.inputs[fieldOut].Placeholder = fmt.Sprintf("./%s_%s.parquet", schema, table)
@@ -101,12 +108,17 @@ func (f DlForm) Update(msg tea.Msg) (DlForm, tea.Cmd) {
 			if columns == "" {
 				columns = "*"
 			}
+			var limit int
+			if v := strings.TrimSpace(f.inputs[fieldLimit].Value()); v != "" {
+				limit, _ = strconv.Atoi(v)
+			}
 			return f, func() tea.Msg {
 				return DlSubmitMsg{
 					Schema:  f.schema,
 					Table:   f.table,
 					Columns: columns,
 					Where:   f.inputs[fieldWhere].Value(),
+					Limit:   limit,
 					Out:     out,
 					Format:  format,
 				}
@@ -135,7 +147,7 @@ func (f DlForm) View(width int) string {
 	title := stylePanelHeader.Render(fmt.Sprintf("Download  %s.%s", f.schema, f.table))
 	sb.WriteString(title + "\n\n")
 
-	labels := []string{"SELECT columns", "WHERE clause", "Output path", "Format (parquet/csv)"}
+	labels := []string{"SELECT columns", "WHERE clause", "LIMIT rows", "Output path", "Format (parquet/csv)"}
 	for i, label := range labels {
 		style := lipgloss.NewStyle().Foreground(colorMuted)
 		if dlFormField(i) == f.focused {

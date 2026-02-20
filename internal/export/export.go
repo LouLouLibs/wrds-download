@@ -20,7 +20,8 @@ import (
 
 // Options controls the export behaviour.
 type Options struct {
-	Format string // "parquet" or "csv"
+	Format       string         // "parquet" or "csv"
+	ProgressFunc func(rows int) // called periodically with total rows exported so far
 }
 
 const rowGroupSize = 10_000
@@ -57,14 +58,14 @@ func Export(query, outPath string, opts Options) error {
 
 	switch format {
 	case "csv":
-		return writeCSV(rows, outPath)
+		return writeCSV(rows, outPath, opts.ProgressFunc)
 	default:
-		return writeParquet(rows, outPath)
+		return writeParquet(rows, outPath, opts.ProgressFunc)
 	}
 }
 
 // writeCSV streams rows into a CSV file with a header row.
-func writeCSV(rows pgx.Rows, outPath string) error {
+func writeCSV(rows pgx.Rows, outPath string, progressFn func(int)) error {
 	f, err := os.Create(outPath)
 	if err != nil {
 		return fmt.Errorf("create csv: %w", err)
@@ -84,6 +85,7 @@ func writeCSV(rows pgx.Rows, outPath string) error {
 	}
 
 	record := make([]string, len(fds))
+	total := 0
 	for rows.Next() {
 		vals, err := rows.Values()
 		if err != nil {
@@ -95,6 +97,10 @@ func writeCSV(rows pgx.Rows, outPath string) error {
 		if err := w.Write(record); err != nil {
 			return fmt.Errorf("write row: %w", err)
 		}
+		total++
+		if progressFn != nil && total%rowGroupSize == 0 {
+			progressFn(total)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("rows: %w", err)
@@ -105,7 +111,7 @@ func writeCSV(rows pgx.Rows, outPath string) error {
 }
 
 // writeParquet streams rows into a Parquet file using parquet-go.
-func writeParquet(rows pgx.Rows, outPath string) error {
+func writeParquet(rows pgx.Rows, outPath string, progressFn func(int)) error {
 	fds := rows.FieldDescriptions()
 
 	schema, colTypes := buildParquetSchema(fds)
@@ -123,6 +129,7 @@ func writeParquet(rows pgx.Rows, outPath string) error {
 	)
 
 	buf := make([]map[string]any, 0, rowGroupSize)
+	total := 0
 
 	for rows.Next() {
 		vals, err := rows.Values()
@@ -140,7 +147,11 @@ func writeParquet(rows pgx.Rows, outPath string) error {
 			if _, err := writer.Write(buf); err != nil {
 				return fmt.Errorf("write row group: %w", err)
 			}
+			total += len(buf)
 			buf = buf[:0]
+			if progressFn != nil {
+				progressFn(total)
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {

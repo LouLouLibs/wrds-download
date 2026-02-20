@@ -6,8 +6,11 @@ A terminal tool for browsing and downloading data from the [WRDS](https://wrds-w
 
 - **TUI** — browse schemas and tables, inspect column metadata, trigger downloads without leaving the terminal
 - **CLI** — scriptable `download` command with structured flags or raw SQL
+- **`info` command** — inspect table metadata (columns, types, row count) from the command line or scripts
 - **Parquet output** — streams rows via pgx and writes Parquet with ZSTD compression using parquet-go (pure Go)
 - **CSV output** — streams rows to CSV via encoding/csv
+- **Progress feedback** — live row count during large exports (CLI and TUI)
+- **Dry-run mode** — preview the query, row count, and first 5 rows before committing to a download
 - **Login flow** — interactive login screen with Duo 2FA support; saved credentials for one-press reconnect
 - **Database switching** — browse and switch between WRDS databases from within the TUI
 - **Standard auth** — reads from `PG*` environment variables, `~/.config/wrds-dl/credentials`, or `~/.pgpass`
@@ -113,10 +116,13 @@ Press `d` on a selected table to open the download form:
 |---|---|
 | SELECT columns | Comma-separated column names, or `*` for all |
 | WHERE clause | SQL filter without the `WHERE` keyword |
+| LIMIT rows | Maximum number of rows to download (leave empty for no limit) |
 | Output path | File path; defaults to `./schema_table.parquet` |
 | Format | `parquet` or `csv` |
 
 Navigate with `tab`/`shift+tab`, confirm with `enter` on the last field.
+
+During download, the spinner shows a live row count updated every 10,000 rows.
 
 ## CLI
 
@@ -159,7 +165,21 @@ wrds-dl download \
 
 Format is inferred from the output file extension (`.parquet` or `.csv`). Override with `--format`.
 
-### All flags
+### Dry run
+
+Preview what a download will do before committing:
+
+```sh
+wrds-dl download \
+  --schema crsp \
+  --table dsf \
+  --where "date = '2020-01-02'" \
+  --dry-run
+```
+
+This prints the SQL query, the row count, and the first 5 rows as a table. No `--out` flag is required for dry runs.
+
+### All download flags
 
 | Flag | Description |
 |---|---|
@@ -168,9 +188,38 @@ Format is inferred from the output file extension (`.parquet` or `.csv`). Overri
 | `-c`, `--columns` | Columns to select (comma-separated, default `*`) |
 | `--where` | SQL `WHERE` clause, without the keyword |
 | `--query` | Full SQL query — overrides `--schema`, `--table`, `--where`, `--columns` |
-| `--out` | Output file path (required) |
+| `--out` | Output file path (required unless `--dry-run`) |
 | `--format` | `parquet` or `csv` (inferred from extension if omitted) |
 | `--limit` | Row limit, useful for testing (default: no limit) |
+| `--dry-run` | Preview query, row count, and first 5 rows without downloading |
+
+### Table info
+
+Inspect table metadata without downloading data:
+
+```sh
+wrds-dl info --schema crsp --table dsf
+```
+
+Output:
+
+```
+crsp.dsf
+  Daily Stock File
+  ~245302893 rows, 47 GB
+
+NAME        TYPE                          NULLABLE  DESCRIPTION
+cusip       character varying(8)          YES       CUSIP - HISTORICAL
+permno      double precision              YES       PERMNO
+permco      double precision              YES       PERMCO
+...
+```
+
+For machine-readable output (useful in scripts and coding assistants):
+
+```sh
+wrds-dl info --schema crsp --table dsf --json
+```
 
 ## How it works
 
@@ -180,7 +229,11 @@ Format is inferred from the output file extension (`.parquet` or `.csv`). Overri
 - **Parquet**: rows are batched (10,000 per row group) and written with ZSTD compression via [parquet-go](https://github.com/parquet-go/parquet-go). String columns use PLAIN encoding for broad compatibility (R, Python, Julia).
 - **CSV**: rows are streamed directly to disk via Go's `encoding/csv`.
 
+Progress is reported every 10,000 rows — printed to stderr on the CLI and shown in the TUI spinner overlay.
+
 PostgreSQL types are mapped to Parquet types: `bool` → BOOLEAN, `int2/int4` → INT32, `int8` → INT64, `float4` → FLOAT, `float8` → DOUBLE, `date` → DATE, `timestamp/timestamptz` → TIMESTAMP (microseconds), `numeric` → STRING, `text/varchar/char` → STRING.
+
+Schema and table names are quoted as PostgreSQL identifiers to prevent SQL injection. Column names from `--columns` are individually quoted.
 
 ## Project structure
 
@@ -190,7 +243,8 @@ wrds-download/
 ├── cmd/
 │   ├── root.go                # cobra root command
 │   ├── tui.go                 # `wrds-dl tui` — launches interactive browser
-│   └── download.go            # `wrds-dl download` — CLI download command
+│   ├── download.go            # `wrds-dl download` — CLI download with --dry-run
+│   └── info.go                # `wrds-dl info` — table metadata inspection
 ├── internal/
 │   ├── db/
 │   │   ├── client.go          # pgx pool, DSN construction, connection management
@@ -200,12 +254,13 @@ wrds-download/
 │   ├── tui/
 │   │   ├── app.go             # root Bubble Tea model, Update/View, pane navigation
 │   │   ├── loginform.go       # login dialog with saved-credentials support
-│   │   ├── dlform.go          # download dialog (columns, where, output, format)
+│   │   ├── dlform.go          # download dialog (columns, where, limit, output, format)
 │   │   └── styles.go          # lipgloss styles and colors
 │   └── config/
 │       └── config.go          # credentials file read/write (~/.config/wrds-dl/)
 └── .github/workflows/
-    └── release.yml            # CI: cross-compile 4 targets, attach to GitHub Release
+    ├── ci.yml                 # CI: go vet, build, and test on push/PR
+    └── release.yml            # Release: cross-compile 4 targets, attach to GitHub Release
 ```
 
 ## Dependencies
