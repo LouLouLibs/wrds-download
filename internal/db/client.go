@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -9,25 +10,35 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// ErrNoUser is returned when PGUSER is not set.
+var ErrNoUser = errors.New("PGUSER not set")
+
 // Client wraps a pgx connection pool.
 type Client struct {
 	Pool *pgxpool.Pool
 }
 
 // DSNFromEnv builds a PostgreSQL DSN from standard PG environment variables.
-func DSNFromEnv() string {
+// Returns ("", ErrNoUser) if PGUSER is empty.
+func DSNFromEnv() (string, error) {
 	host := getenv("PGHOST", "wrds-pgdata.wharton.upenn.edu")
 	port := getenv("PGPORT", "9737")
 	user := getenv("PGUSER", "")
 	password := getenv("PGPASSWORD", "")
-	database := getenv("PGDATABASE", user) // WRDS default db = username
+	database := getenv("PGDATABASE", "wrds")
 
-	if password != "" {
-		return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=require",
-			host, port, user, password, database)
+	if user == "" {
+		return "", ErrNoUser
 	}
-	return fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=require",
-		host, port, user, database)
+
+	dsn := fmt.Sprintf("host=%s port=%s user=%s sslmode=require", host, port, user)
+	if password != "" {
+		dsn += fmt.Sprintf(" password=%s", password)
+	}
+	if database != "" {
+		dsn += fmt.Sprintf(" dbname=%s", database)
+	}
+	return dsn, nil
 }
 
 // PortFromEnv returns the port as an integer (for DuckDB attach).
@@ -49,7 +60,10 @@ func getenv(key, fallback string) string {
 
 // New creates and pings a pgx pool using DSNFromEnv.
 func New(ctx context.Context) (*Client, error) {
-	dsn := DSNFromEnv()
+	dsn, err := DSNFromEnv()
+	if err != nil {
+		return nil, err
+	}
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("pgxpool.New: %w", err)
@@ -59,6 +73,36 @@ func New(ctx context.Context) (*Client, error) {
 		return nil, fmt.Errorf("ping: %w", err)
 	}
 	return &Client{Pool: pool}, nil
+}
+
+// NewWithCredentials sets PGUSER/PGPASSWORD/PGDATABASE env vars then creates and pings a pool.
+func NewWithCredentials(ctx context.Context, user, password, database string) (*Client, error) {
+	os.Setenv("PGUSER", user)
+	os.Setenv("PGPASSWORD", password)
+	if database != "" {
+		os.Setenv("PGDATABASE", database)
+	}
+	return New(ctx)
+}
+
+// Databases returns the list of connectable databases.
+func (c *Client) Databases(ctx context.Context) ([]string, error) {
+	rows, err := c.Pool.Query(ctx,
+		"SELECT datname FROM pg_database WHERE datallowconn = true ORDER BY datname")
+	if err != nil {
+		return nil, fmt.Errorf("databases query: %w", err)
+	}
+	defer rows.Close()
+
+	var dbs []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		dbs = append(dbs, name)
+	}
+	return dbs, rows.Err()
 }
 
 // Close releases the pool.

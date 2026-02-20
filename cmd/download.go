@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/eloualiche/wrds-download/internal/config"
 	"github.com/eloualiche/wrds-download/internal/export"
 	"github.com/spf13/cobra"
 )
@@ -47,6 +48,8 @@ func init() {
 }
 
 func runDownload(cmd *cobra.Command, args []string) error {
+	config.ApplyCredentials()
+
 	query, err := buildQuery()
 	if err != nil {
 		return err
