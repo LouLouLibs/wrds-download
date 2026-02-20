@@ -48,12 +48,20 @@ func getenv(key, fallback string) string {
 }
 
 // New creates and pings a pgx pool using DSNFromEnv.
+// The pool is limited to a single connection to avoid triggering
+// multiple authentication prompts (e.g. Duo 2FA on WRDS).
 func New(ctx context.Context) (*Client, error) {
 	dsn, err := DSNFromEnv()
 	if err != nil {
 		return nil, err
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse dsn: %w", err)
+	}
+	cfg.MaxConns = 1
+	cfg.MinConns = 0
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("pgxpool.New: %w", err)
 	}

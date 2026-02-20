@@ -119,6 +119,7 @@ func writeParquet(rows pgx.Rows, outPath string) error {
 	writer := parquet.NewGenericWriter[map[string]any](f,
 		schema,
 		parquet.Compression(&zstd.Codec{}),
+		parquet.DefaultEncodingFor(parquet.ByteArray, &parquet.Plain),
 	)
 
 	buf := make([]map[string]any, 0, rowGroupSize)
