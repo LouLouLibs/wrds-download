@@ -175,7 +175,7 @@ func (c *Client) Preview(ctx context.Context, schema, table string, limit int) (
 		limit = 50
 	}
 
-	qualified := fmt.Sprintf("%s.%s", quoteIdent(schema), quoteIdent(table))
+	qualified := fmt.Sprintf("%s.%s", QuoteIdent(schema), QuoteIdent(table))
 
 	// Estimated count via pg stats (fast).
 	var total int64
@@ -220,6 +220,8 @@ func (c *Client) Preview(ctx context.Context, schema, table string, limit int) (
 	return &result, rows.Err()
 }
 
-func quoteIdent(s string) string {
+// QuoteIdent quotes a PostgreSQL identifier (schema, table, column name)
+// to prevent SQL injection.
+func QuoteIdent(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
