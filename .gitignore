@@ -1,0 +1,5 @@
+wrds-dl
+wrds-dl-*
+*.parquet
+*.csv
+.claude/
