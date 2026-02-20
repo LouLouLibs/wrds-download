@@ -221,6 +221,28 @@ For machine-readable output (useful in scripts and coding assistants):
 wrds-dl info --schema crsp --table dsf --json
 ```
 
+## Claude Code skill
+
+A bundled [Claude Code](https://claude.com/claude-code) skill lets you download WRDS data using natural language:
+
+```
+/wrds-download CRSP daily stock data for 2020
+```
+
+Claude will inspect the table, show you the structure, do a dry run for large tables, and download to Parquet.
+
+To install, copy the skill into your project or personal skills directory:
+
+```sh
+# Project-level (committed to repo)
+cp -r claude-skill-wrds-download .claude/skills/wrds-download
+
+# Personal (all your projects)
+cp -r claude-skill-wrds-download ~/.claude/skills/wrds-download
+```
+
+See [`claude-skill-wrds-download/README.md`](claude-skill-wrds-download/README.md) for details.
+
 ## How it works
 
 `wrds-dl` connects directly to the WRDS PostgreSQL server using [pgx](https://github.com/jackc/pgx). All operations — metadata browsing, column inspection, and data download — go through a single pooled connection (limited to 1 to avoid triggering multiple Duo 2FA prompts).
@@ -240,6 +262,9 @@ Schema and table names are quoted as PostgreSQL identifiers to prevent SQL injec
 ```
 wrds-download/
 ├── main.go                    # entrypoint
+├── claude-skill-wrds-download/
+│   ├── SKILL.md               # Claude Code skill for natural-language downloads
+│   └── README.md              # skill installation instructions
 ├── cmd/
 │   ├── root.go                # cobra root command
 │   ├── tui.go                 # `wrds-dl tui` — launches interactive browser
