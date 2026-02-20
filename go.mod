@@ -1,4 +1,4 @@
-module github.com/eloualiche/wrds-download
+module github.com/louloulibs/wrds-download
 
 go 1.25.0
 

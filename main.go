@@ -1,6 +1,6 @@
 package main
 
-import "github.com/eloualiche/wrds-download/cmd"
+import "github.com/louloulibs/wrds-download/cmd"
 
 func main() {
 	cmd.Execute()

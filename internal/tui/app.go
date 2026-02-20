@@ -12,9 +12,9 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/eloualiche/wrds-download/internal/config"
-	"github.com/eloualiche/wrds-download/internal/db"
-	"github.com/eloualiche/wrds-download/internal/export"
+	"github.com/louloulibs/wrds-download/internal/config"
+	"github.com/louloulibs/wrds-download/internal/db"
+	"github.com/louloulibs/wrds-download/internal/export"
 )
 
 // pane identifies which panel is focused.

@@ -15,7 +15,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/compress/zstd"
 
-	"github.com/eloualiche/wrds-download/internal/db"
+	"github.com/louloulibs/wrds-download/internal/db"
 )
 
 // Options controls the export behaviour.
