@@ -3,3 +3,11 @@ wrds-dl-*
 *.parquet
 *.csv
 .claude/
+
+# Python
+python/.venv/
+python/uv.lock
+__pycache__/
+*.pyc
+*.egg-info/
+dist/

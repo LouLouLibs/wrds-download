@@ -1,24 +1,29 @@
 ---
 name: wrds-download
 description: Download data from the WRDS (Wharton Research Data Services) PostgreSQL database to local Parquet or CSV files. Use when the user asks to get data from WRDS, download financial data, or mentions WRDS schemas like crsp, comp, optionm, ibes, etc.
-allowed-tools: Bash(wrds-dl *), Read, Grep
+allowed-tools: Bash(wrds-dl *), Bash(uv run *wrds*), Read, Grep
 argument-hint: [description of data needed]
 ---
 
-# WRDS Data Download
+# WRDS Data Download (Python)
 
-You help users download data from the Wharton Research Data Services (WRDS) PostgreSQL database using the `wrds-dl` CLI tool.
+You help users download data from the Wharton Research Data Services (WRDS) PostgreSQL database using the `wrds-dl` Python CLI tool (via `uv`).
 
 ## Prerequisites
 
-The `wrds-dl` CLI must be installed and on the PATH. Either the Go binary or the Python version works — they have the same commands and flags. The user must have WRDS credentials configured via one of:
-- Environment variables: `PGUSER` and `PGPASSWORD`
-- Saved credentials at `~/.config/wrds-dl/credentials`
-- Standard `~/.pgpass` file
+The user must have:
+- **`uv`** installed (https://docs.astral.sh/uv/)
+- **WRDS credentials** configured via one of:
+  - Environment variables: `PGUSER` and `PGPASSWORD`
+  - Saved credentials at `~/.config/wrds-dl/credentials`
+  - Standard `~/.pgpass` file
 
-If `wrds-dl` is not found, tell the user to install it:
-- **Go binary**: download from https://github.com/LouLouLibs/wrds-download/releases
-- **Python (via uv)**: `uv tool install wrds-dl --from /path/to/wrds-download/python`
+Run the CLI with `uv run wrds-dl` from the `python/` directory of the wrds-download repo, or `wrds-dl` if installed via `uv tool install`.
+
+If `wrds-dl` is not found and `uv` is available, install it:
+```bash
+uv tool install wrds-dl --from /path/to/wrds-download/python
+```
 
 ## Workflow
 
@@ -109,7 +114,7 @@ ls -lh <output_file>
 
 ## Error handling
 
-- **Authentication errors**: Remind the user to set `PGUSER`/`PGPASSWORD` or run `wrds-dl tui` to save credentials.
+- **Authentication errors**: Remind the user to set `PGUSER`/`PGPASSWORD` or configure `~/.config/wrds-dl/credentials`.
 - **Table not found**: Use `wrds-dl info` to check schema/table names. WRDS schemas and table names are lowercase.
 - **Timeout on large tables**: Suggest adding a `--where` filter or `--limit` to reduce the result set.
 - **Duo 2FA prompt**: The connection triggers a Duo push. Tell the user to approve it on their phone.
@@ -117,13 +122,13 @@ ls -lh <output_file>
 ## Example interactions
 
 **User**: "Download CRSP daily stock data for 2020"
-→ `wrds-dl info --schema crsp --table dsf`
-→ `wrds-dl download --schema crsp --table dsf --where "date >= '2020-01-01' AND date < '2021-01-01'" --out crsp_dsf_2020.parquet`
+-> `wrds-dl info --schema crsp --table dsf`
+-> `wrds-dl download --schema crsp --table dsf --where "date >= '2020-01-01' AND date < '2021-01-01'" --out crsp_dsf_2020.parquet`
 
 **User**: "Get Compustat annual fundamentals, just gvkey, datadate, and sales"
-→ `wrds-dl info --schema comp --table funda`
-→ `wrds-dl download --schema comp --table funda --columns "gvkey,datadate,sale" --out comp_funda.parquet`
+-> `wrds-dl info --schema comp --table funda`
+-> `wrds-dl download --schema comp --table funda --columns "gvkey,datadate,sale" --out comp_funda.parquet`
 
 **User**: "I need IBES analyst estimates"
-→ `wrds-dl info --schema ibes --table statsum_epsus`
-→ Ask what date range and variables they need, then download.
+-> `wrds-dl info --schema ibes --table statsum_epsus`
+-> Ask what date range and variables they need, then download.
