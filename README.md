@@ -1,5 +1,11 @@
 # wrds-dl
 
+[![CI (Go)](https://github.com/LouLouLibs/wrds-download/actions/workflows/ci.yml/badge.svg)](https://github.com/LouLouLibs/wrds-download/actions/workflows/ci.yml)
+[![CI (Python)](https://github.com/LouLouLibs/wrds-download/actions/workflows/ci-python.yml/badge.svg)](https://github.com/LouLouLibs/wrds-download/actions/workflows/ci-python.yml)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](go/)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](python/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A terminal tool for browsing and downloading data from the [WRDS](https://wrds-www.wharton.upenn.edu/) PostgreSQL database. Output is Parquet or CSV.
 
 Two implementations with the same CLI interface — pick whichever fits your environment:
