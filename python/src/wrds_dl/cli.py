@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import sys
 
 import click
 import psycopg
 
 from wrds_dl.config import apply_credentials
-from wrds_dl.db import build_query, connect, dsn_from_env, quote_ident, table_meta
+from wrds_dl.db import build_query, connect, dsn_from_env, table_meta
 
 
 @click.group()

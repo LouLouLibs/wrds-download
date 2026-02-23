@@ -2,7 +2,7 @@
 
 import pyarrow as pa
 
-from wrds_dl.export import _PG_OID_TO_ARROW, _arrow_type_for_oid, _format_row
+from wrds_dl.export import _arrow_type_for_oid, _format_row
 
 
 class TestArrowTypeForOid:

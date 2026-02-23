@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import sys
 from decimal import Decimal
 from typing import Callable
 
