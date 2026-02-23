@@ -18,6 +18,8 @@ Two implementations with the same CLI interface — pick whichever fits your env
 | **Dependencies** | None (static binary) | Python 3.10+, `uv` |
 | **Best for** | Interactive exploration, offline use | HPC clusters, CI, quick installs |
 
+> **Full documentation:** [**Go version**](go/README.md) (TUI + CLI, installation, keybindings, all flags) | [**Python version**](python/README.md) (CLI, uv setup, development)
+
 ## Quick start
 
 ### Go
