@@ -18,7 +18,7 @@ cp -r claude-skill-wrds-download ~/.claude/skills/wrds-download
 
 ## Prerequisites
 
-1. **`wrds-dl` binary** on your PATH — see [Installation](../README.md#installation)
+1. **`wrds-dl`** on your PATH — either the [Go binary](../go/) or the [Python CLI](../python/) (`uv tool install wrds-dl --from ./python`)
 2. **WRDS credentials** configured via environment variables, saved credentials, or `~/.pgpass`
 
 ## Usage

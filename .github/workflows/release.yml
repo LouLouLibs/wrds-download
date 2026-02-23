@@ -13,6 +13,9 @@ jobs:
   build:
     needs: [ci]
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go
     strategy:
       matrix:
         include:
@@ -42,7 +45,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: wrds-dl-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: wrds-dl-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          path: go/wrds-dl-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
 
   release:
     needs: [build]
