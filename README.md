@@ -1,4 +1,7 @@
+<div align="center">
+
 # wrds-dl
+### Browse and download WRDS data from your terminal
 
 [![CI (Go)](https://github.com/LouLouLibs/wrds-download/actions/workflows/ci.yml/badge.svg)](https://github.com/LouLouLibs/wrds-download/actions/workflows/ci.yml)
 [![CI (Python)](https://github.com/LouLouLibs/wrds-download/actions/workflows/ci-python.yml/badge.svg)](https://github.com/LouLouLibs/wrds-download/actions/workflows/ci-python.yml)
@@ -6,9 +9,25 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](python/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A terminal tool for browsing and downloading data from the [WRDS](https://wrds-www.wharton.upenn.edu/) PostgreSQL database. Output is Parquet or CSV.
+<img src="./demo-wrds-download.gif" width="800" alt="Demo of the TUI browsing WRDS schemas and downloading data">
 
-Two implementations with the same CLI interface — pick whichever fits your environment:
+</div>
+
+---
+
+## Features
+
+- **Interactive TUI** — browse schemas, tables, and column metadata with keyboard navigation
+- **CLI download** — script-friendly `download` and `info` commands for automation and HPC
+- **Parquet & CSV** — output to compressed Parquet (ZSTD) or CSV
+- **Dry run** — preview queries, row counts, and sample rows before downloading
+- **Raw SQL** — run arbitrary queries when schema/table syntax isn't enough
+- **Streaming** — server-side cursors keep memory usage low on large tables
+- **Saved credentials** — authenticate once, connect instantly
+
+## Two implementations
+
+Same CLI interface — pick whichever fits your environment:
 
 | | [Go](go/) | [Python](python/) |
 |---|---|---|
@@ -41,7 +60,7 @@ uv tool install wrds-dl --from ./python
 cd python && uv run wrds-dl --help
 ```
 
-## CLI (both implementations)
+## Usage
 
 ```sh
 # CRSP monthly stock file — prices and returns for 2020
@@ -57,12 +76,7 @@ wrds-dl info --schema crsp --table msf
 wrds-dl download --schema crsp --table msf \
   --where "date = '2020-01-31'" --dry-run
 
-# CRSP daily stock file
-wrds-dl download --schema crsp --table dsf \
-  --where "date >= '2020-01-01' AND date < '2021-01-01'" \
-  --out crsp_dsf_2020.parquet
-
-# Select specific columns from Compustat
+# Compustat fundamentals
 wrds-dl download --schema comp --table funda \
   --columns "gvkey,datadate,sale,at" \
   --out funda_subset.parquet
@@ -76,24 +90,6 @@ wrds-dl download \
 wrds-dl download --schema crsp --table msf \
   --columns "permno,date,ret" --limit 1000 \
   --out crsp_msf_sample.csv
-```
-
-## Claude Code skill
-
-Bundled [Claude Code](https://claude.com/claude-code) skills let you download WRDS data using natural language:
-
-```
-/wrds-download CRSP daily stock data for 2020
-```
-
-Two variants available:
-- [`claude-skill-wrds-download/`](claude-skill-wrds-download/) — uses the Go binary
-- [`claude-skill-wrds-download-py/`](claude-skill-wrds-download-py/) — uses the Python CLI (no binary needed)
-
-Install by copying the skill into your skills directory:
-
-```sh
-cp -r claude-skill-wrds-download-py ~/.claude/skills/wrds-download
 ```
 
 ## Authentication
@@ -117,7 +113,7 @@ export PGDATABASE=wrds
 
 ### Option 2: Saved credentials
 
-Store credentials at `~/.config/wrds-dl/credentials` (or `$XDG_CONFIG_HOME/wrds-dl/credentials`) with `0600` permissions:
+Store at `~/.config/wrds-dl/credentials` (or `$XDG_CONFIG_HOME/wrds-dl/credentials`) with `0600` permissions:
 
 ```
 PGUSER=your_username
@@ -125,7 +121,7 @@ PGPASSWORD=your_password
 PGDATABASE=wrds
 ```
 
-The Go TUI can save these automatically on first login.
+The Go TUI saves these automatically on first login.
 
 ### Option 3: ~/.pgpass
 
@@ -133,6 +129,24 @@ Standard PostgreSQL password file:
 
 ```
 wrds-pgdata.wharton.upenn.edu:9737:*:your_username:your_password
+```
+
+## Claude Code skill
+
+Bundled [Claude Code](https://claude.com/claude-code) skills let you download WRDS data using natural language:
+
+```
+/wrds-download CRSP daily stock data for 2020
+```
+
+Two variants available:
+- [`claude-skill-wrds-download/`](claude-skill-wrds-download/) — uses the Go binary
+- [`claude-skill-wrds-download-py/`](claude-skill-wrds-download-py/) — uses the Python CLI (no binary needed)
+
+Install by copying the skill into your skills directory:
+
+```sh
+cp -r claude-skill-wrds-download-py ~/.claude/skills/wrds-download
 ```
 
 ## Project structure
@@ -150,3 +164,7 @@ wrds-download/
 ├── claude-skill-wrds-download-py/  # Claude skill (Python/uv)
 └── .github/workflows/              # CI for both implementations
 ```
+
+## License
+
+MIT
