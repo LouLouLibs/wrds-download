@@ -4,6 +4,9 @@ wrds-dl-*
 *.csv
 .claude/
 
+# Demo (raw GIF contains unredacted credentials)
+demo-wrds-download-raw.gif
+
 # Python
 python/.venv/
 python/uv.lock
