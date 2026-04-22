@@ -7,9 +7,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Version is the CLI version. Overridable at build time via:
+//   go build -ldflags "-X github.com/louloulibs/wrds-download/cmd.Version=v1.2.3"
+var Version = "dev"
+
 var rootCmd = &cobra.Command{
-	Use:   "wrds-dl",
-	Short: "WRDS data browser and downloader",
+	Use:     "wrds-dl",
+	Version: Version,
+	Short:   "WRDS data browser and downloader",
 	Long: `wrds is a CLI/TUI tool for navigating and downloading data
 from the Wharton Research Data Services (WRDS) PostgreSQL database.
 
