@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -92,6 +93,26 @@ type App struct {
 	selectedTable   string
 	downloadRows    int
 	dlProgressCh    chan int
+
+	schemasLoading   bool
+	tablesLoading    bool
+	databasesLoading bool
+
+	lastListW, lastListH int
+}
+
+// restrictPagingKeys removes arrow/letter bindings from the list's page nav,
+// leaving only pgup/pgdown. The App uses arrows and h/l for pane switching,
+// so advertising them for page nav (the bubbles list default) is misleading.
+func restrictPagingKeys(l *list.Model) {
+	l.KeyMap.NextPage = key.NewBinding(
+		key.WithKeys("pgdown", "ctrl+d"),
+		key.WithHelp("pgdn/^d", "next page"),
+	)
+	l.KeyMap.PrevPage = key.NewBinding(
+		key.WithKeys("pgup", "ctrl+u"),
+		key.WithHelp("pgup/^u", "prev page"),
+	)
 }
 
 func newPreviewFilter() textinput.Model {
@@ -114,6 +135,7 @@ func NewApp(client *db.Client) *App {
 	schemaList.SetFilteringEnabled(true)
 	schemaList.DisableQuitKeybindings()
 	schemaList.Styles.TitleBar = schemaList.Styles.TitleBar.Padding(0, 0, 0, 2)
+	restrictPagingKeys(&schemaList)
 
 	tableList := list.New(nil, del, 0, 0)
 	tableList.Title = "Tables"
@@ -121,6 +143,7 @@ func NewApp(client *db.Client) *App {
 	tableList.SetFilteringEnabled(true)
 	tableList.DisableQuitKeybindings()
 	tableList.Styles.TitleBar = tableList.Styles.TitleBar.Padding(0, 0, 0, 2)
+	restrictPagingKeys(&tableList)
 
 	dbList := list.New(nil, del, 0, 0)
 	dbList.Title = "Databases"
@@ -128,6 +151,7 @@ func NewApp(client *db.Client) *App {
 	dbList.SetFilteringEnabled(true)
 	dbList.DisableQuitKeybindings()
 	dbList.Styles.TitleBar = dbList.Styles.TitleBar.Padding(0, 0, 0, 2)
+	restrictPagingKeys(&dbList)
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -157,6 +181,7 @@ func NewAppNoClient() *App {
 	schemaList.SetFilteringEnabled(true)
 	schemaList.DisableQuitKeybindings()
 	schemaList.Styles.TitleBar = schemaList.Styles.TitleBar.Padding(0, 0, 0, 2)
+	restrictPagingKeys(&schemaList)
 
 	tableList := list.New(nil, del, 0, 0)
 	tableList.Title = "Tables"
@@ -164,6 +189,7 @@ func NewAppNoClient() *App {
 	tableList.SetFilteringEnabled(true)
 	tableList.DisableQuitKeybindings()
 	tableList.Styles.TitleBar = tableList.Styles.TitleBar.Padding(0, 0, 0, 2)
+	restrictPagingKeys(&tableList)
 
 	dbList := list.New(nil, del, 0, 0)
 	dbList.Title = "Databases"
@@ -171,6 +197,7 @@ func NewAppNoClient() *App {
 	dbList.SetFilteringEnabled(true)
 	dbList.DisableQuitKeybindings()
 	dbList.Styles.TitleBar = dbList.Styles.TitleBar.Padding(0, 0, 0, 2)
+	restrictPagingKeys(&dbList)
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -192,6 +219,7 @@ func (a *App) Init() tea.Cmd {
 	if a.state == stateLogin {
 		return textinput.Blink
 	}
+	a.schemasLoading = true
 	return tea.Batch(
 		a.loadSchemas(),
 		a.spinner.Tick,
@@ -200,7 +228,9 @@ func (a *App) Init() tea.Cmd {
 
 func (a *App) loadSchemas() tea.Cmd {
 	return func() tea.Msg {
-		schemas, err := a.client.Schemas(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		schemas, err := a.client.Schemas(ctx)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -210,7 +240,9 @@ func (a *App) loadSchemas() tea.Cmd {
 
 func (a *App) loadTables(schema string) tea.Cmd {
 	return func() tea.Msg {
-		tables, err := a.client.Tables(context.Background(), schema)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		tables, err := a.client.Tables(ctx, schema)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -296,7 +328,9 @@ func (a *App) attemptLogin(msg LoginSubmitMsg) tea.Cmd {
 
 func (a *App) loadDatabases() tea.Cmd {
 	return func() tea.Msg {
-		dbs, err := a.client.Databases(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		dbs, err := a.client.Databases(ctx)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -346,7 +380,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		a.spinner, cmd = a.spinner.Update(msg)
-		return a, cmd
+		if a.schemasLoading || a.tablesLoading || a.databasesLoading || a.state == stateDownloading {
+			return a, cmd
+		}
+		return a, nil
 
 	case schemasLoadedMsg:
 		items := make([]list.Item, len(msg.schemas))
@@ -354,6 +391,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			items[i] = item{s.Name}
 		}
 		a.schemaList.SetItems(items)
+		a.schemasLoading = false
 		return a, nil
 
 	case tablesLoadedMsg:
@@ -362,6 +400,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			items[i] = item{t.Name}
 		}
 		a.tableList.SetItems(items)
+		a.tablesLoading = false
 		a.previewMeta = nil
 		a.previewScroll = 0
 		a.previewFilter.SetValue("")
@@ -386,6 +425,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.client = msg.client
 		a.currentDatabase = os.Getenv("PGDATABASE")
 		a.state = stateBrowse
+		a.schemasLoading = true
 		return a, tea.Batch(a.loadSchemas(), a.spinner.Tick)
 
 	case loginFailMsg:
@@ -399,7 +439,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			items[i] = item{d}
 		}
 		a.dbList.SetItems(items)
-		a.state = stateDatabaseSelect
+		a.databasesLoading = false
 		return a, nil
 
 	case databaseSwitchedMsg:
@@ -412,8 +452,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.previewScroll = 0
 		a.previewFilter.SetValue("")
 		a.tableList.SetItems(nil)
+		a.schemaList.SetItems(nil)
+		a.schemasLoading = true
 		a.state = stateBrowse
-		return a, a.loadSchemas()
+		return a, tea.Batch(a.loadSchemas(), a.spinner.Tick)
 
 	case databaseSwitchFailMsg:
 		a.statusErr = friendlyError(msg.err)
@@ -422,6 +464,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		a.statusErr = friendlyError(msg.err)
+		a.schemasLoading = false
+		a.tablesLoading = false
+		a.databasesLoading = false
 		a.state = stateBrowse
 		return a, nil
 
@@ -551,7 +596,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.selectedSchema = sel
 					a.selectedTable = ""
 					a.focus = paneTable
-					return a, a.loadTables(sel)
+					a.tableList.SetItems(nil)
+					a.tablesLoading = true
+					return a, tea.Batch(a.loadTables(sel), a.spinner.Tick)
 				}
 			case paneTable:
 				if sel := selectedItemTitle(a.tableList); sel != "" {
@@ -594,7 +641,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.focusedListFiltering() {
 				break
 			}
-			return a, a.loadDatabases()
+			a.databasesLoading = true
+			a.dbList.SetItems(nil)
+			a.state = stateDatabaseSelect
+			return a, tea.Batch(a.loadDatabases(), a.spinner.Tick)
 
 		case "esc":
 			if a.focusedListFiltering() {
@@ -673,8 +723,20 @@ func (a *App) View() string {
 
 	schemaPanelW, tablePanelW, previewPanelW := a.panelWidths()
 
-	schemaPanel := a.renderListPanel(a.schemaList, "Schemas", paneSchema, schemaPanelW, contentH, 1)
-	tablePanel := a.renderListPanel(a.tableList, fmt.Sprintf("Tables (%s)", a.selectedSchema), paneTable, tablePanelW, contentH, 1)
+	tablesTitle := "Tables"
+	if a.selectedSchema != "" {
+		tablesTitle = fmt.Sprintf("Tables (%s)", a.selectedSchema)
+	}
+	// Apply list sizes only when dimensions change — SetSize triggers
+	// updatePagination + title re-render, which is wasteful per-frame.
+	if a.lastListW != schemaPanelW || a.lastListH != contentH {
+		a.schemaList.SetSize(schemaPanelW-2, contentH-2)
+		a.tableList.SetSize(tablePanelW-2, contentH-2)
+		a.lastListW = schemaPanelW
+		a.lastListH = contentH
+	}
+	schemaPanel := a.renderListPanel(&a.schemaList, "Schemas", a.schemasLoading, paneSchema, schemaPanelW, contentH, 1)
+	tablePanel := a.renderListPanel(&a.tableList, tablesTitle, a.tablesLoading, paneTable, tablePanelW, contentH, 1)
 	previewPanel := a.renderPreviewPanel(previewPanelW, contentH)
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, schemaPanel, tablePanel, previewPanel)
@@ -682,7 +744,12 @@ func (a *App) View() string {
 
 	if a.state == stateDatabaseSelect {
 		a.dbList.SetSize(40, a.height/2)
-		content := a.dbList.View()
+		var content string
+		if a.databasesLoading {
+			content = a.spinner.View() + "  Loading databases…"
+		} else {
+			content = a.dbList.View()
+		}
 		hint := styleStatusBar.Render("[enter] switch   [esc] cancel   [/] filter")
 		box := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -737,8 +804,12 @@ func (a *App) footerView() string {
 	return footer
 }
 
-func (a *App) renderListPanel(l list.Model, title string, p pane, w, h, mr int) string {
-	l.SetSize(w-2, h-2)
+func (a *App) renderListPanel(l *list.Model, title string, loading bool, p pane, w, h, mr int) string {
+	if loading {
+		l.Title = a.spinner.View() + " " + title + " — loading…"
+	} else {
+		l.Title = title
+	}
 	content := l.View()
 	style := stylePanelBlurred
 	if a.focus == p {
