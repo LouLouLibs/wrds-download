@@ -1,11 +1,17 @@
 package export
 
 import (
+	"io"
 	"math/big"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/parquet-go/parquet-go"
 )
 
 func TestFormatValue(t *testing.T) {
@@ -77,5 +83,107 @@ func TestConvertValue(t *testing.T) {
 				t.Errorf("convertValue(%v, %v) = %v (%T), want %v (%T)", tt.v, tt.ct, got, got, tt.want, tt.want)
 			}
 		})
+	}
+}
+
+// fakeRows is an in-memory pgx.Rows for exercising the writers without a database.
+type fakeRows struct {
+	fds  []pgconn.FieldDescription
+	data [][]any
+	i    int
+}
+
+func (r *fakeRows) Close()                                       {}
+func (r *fakeRows) Err() error                                   { return nil }
+func (r *fakeRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
+func (r *fakeRows) FieldDescriptions() []pgconn.FieldDescription { return r.fds }
+func (r *fakeRows) Next() bool                                   { r.i++; return r.i <= len(r.data) }
+func (r *fakeRows) Scan(dest ...any) error                       { return nil }
+func (r *fakeRows) Values() ([]any, error)                       { return r.data[r.i-1], nil }
+func (r *fakeRows) RawValues() [][]byte                          { return nil }
+func (r *fakeRows) Conn() *pgx.Conn                              { return nil }
+
+// TestWriteParquetZeroValues is a regression test for zero values (0, 0.0, false, "",
+// the epoch) being written as NULL, and for columns being reordered by name.
+func TestWriteParquetZeroValues(t *testing.T) {
+	epoch := time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
+	fds := []pgconn.FieldDescription{
+		{Name: "i4", DataTypeOID: 23},
+		{Name: "i8", DataTypeOID: 20},
+		{Name: "f8", DataTypeOID: 701},
+		{Name: "f4", DataTypeOID: 700},
+		{Name: "s", DataTypeOID: 25},
+		{Name: "b", DataTypeOID: 16},
+		{Name: "d", DataTypeOID: 1082},
+		{Name: "ts", DataTypeOID: 1114},
+		{Name: "one", DataTypeOID: 23},
+		{Name: "true_null", DataTypeOID: 23},
+	}
+	data := [][]any{
+		{int32(0), int64(0), float64(0), float32(0), "", false, epoch, epoch, int32(1), nil},
+		{nil, nil, nil, nil, nil, nil, nil, nil, nil, nil},
+	}
+
+	out := filepath.Join(t.TempDir(), "zero.parquet")
+	if err := writeParquet(&fakeRows{fds: fds, data: data}, out, nil); err != nil {
+		t.Fatalf("writeParquet: %v", err)
+	}
+
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pf, err := parquet.OpenFile(f, st.Size())
+	if err != nil {
+		t.Fatalf("open parquet: %v", err)
+	}
+
+	fields := pf.Schema().Fields()
+	if len(fields) != len(fds) {
+		t.Fatalf("got %d columns, want %d", len(fields), len(fds))
+	}
+	for i, fd := range fds {
+		if fields[i].Name() != fd.Name {
+			t.Errorf("column %d = %q, want %q", i, fields[i].Name(), fd.Name)
+		}
+	}
+
+	reader := parquet.NewReader(pf)
+	defer reader.Close()
+	got := make([]parquet.Row, len(data))
+	n, err := reader.ReadRows(got)
+	if err != nil && err != io.EOF {
+		t.Fatalf("read rows: %v", err)
+	}
+	if n != len(data) {
+		t.Fatalf("read %d rows, want %d", n, len(data))
+	}
+
+	want := []any{int32(0), int64(0), float64(0), float32(0), "", false, int32(0), int64(0), int32(1), nil}
+	for i, w := range want {
+		v := got[0][i]
+		if w == nil {
+			if !v.IsNull() {
+				t.Errorf("row 0 %s = %v, want NULL", fds[i].Name, v)
+			}
+			continue
+		}
+		if v.IsNull() {
+			t.Errorf("row 0 %s is NULL, want %v", fds[i].Name, w)
+			continue
+		}
+		if v.Kind() != parquet.ValueOf(w).Kind() || !parquet.Equal(v, parquet.ValueOf(w)) {
+			t.Errorf("row 0 %s = %v, want %v", fds[i].Name, v, w)
+		}
+	}
+	for i, v := range got[1] {
+		if !v.IsNull() {
+			t.Errorf("row 1 %s = %v, want NULL", fds[i].Name, v)
+		}
 	}
 }

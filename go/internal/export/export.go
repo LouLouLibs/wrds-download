@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -111,6 +112,10 @@ func writeCSV(rows pgx.Rows, outPath string, progressFn func(int)) error {
 }
 
 // writeParquet streams rows into a Parquet file using parquet-go.
+//
+// Rows are built as parquet.Row values with explicit definition levels so that
+// only a SQL NULL is written as null: going through Go values (e.g. map[string]any)
+// makes parquet-go treat zero values (0, 0.0, false, "") of optional columns as null.
 func writeParquet(rows pgx.Rows, outPath string, progressFn func(int)) error {
 	fds := rows.FieldDescriptions()
 
@@ -122,13 +127,13 @@ func writeParquet(rows pgx.Rows, outPath string, progressFn func(int)) error {
 	}
 	defer f.Close()
 
-	writer := parquet.NewGenericWriter[map[string]any](f,
+	writer := parquet.NewWriter(f,
 		schema,
 		parquet.Compression(&zstd.Codec{}),
 		parquet.DefaultEncodingFor(parquet.ByteArray, &parquet.Plain),
 	)
 
-	buf := make([]map[string]any, 0, rowGroupSize)
+	buf := make([]parquet.Row, 0, rowGroupSize)
 	total := 0
 
 	for rows.Next() {
@@ -137,14 +142,14 @@ func writeParquet(rows pgx.Rows, outPath string, progressFn func(int)) error {
 			return fmt.Errorf("scan row: %w", err)
 		}
 
-		row := make(map[string]any, len(fds))
+		row := make(parquet.Row, len(fds))
 		for i, v := range vals {
-			row[fds[i].Name] = convertValue(v, colTypes[i])
+			row[i] = parquetValue(v, colTypes[i], i)
 		}
 		buf = append(buf, row)
 
 		if len(buf) >= rowGroupSize {
-			if _, err := writer.Write(buf); err != nil {
+			if _, err := writer.WriteRows(buf); err != nil {
 				return fmt.Errorf("write row group: %w", err)
 			}
 			total += len(buf)
@@ -160,12 +165,21 @@ func writeParquet(rows pgx.Rows, outPath string, progressFn func(int)) error {
 
 	// Flush remaining rows.
 	if len(buf) > 0 {
-		if _, err := writer.Write(buf); err != nil {
+		if _, err := writer.WriteRows(buf); err != nil {
 			return fmt.Errorf("write final rows: %w", err)
 		}
 	}
 
 	return writer.Close()
+}
+
+// parquetValue converts a pgx-scanned value into a parquet value for the optional
+// leaf column at index col. Only a nil (SQL NULL) gets definition level 0.
+func parquetValue(v any, ct colType, col int) parquet.Value {
+	if v == nil {
+		return parquet.NullValue().Level(0, 0, col)
+	}
+	return parquet.ValueOf(convertValue(v, ct)).Level(0, 1, col)
 }
 
 // colType tags how we convert PG values for Parquet.
@@ -182,10 +196,14 @@ const (
 	colTimestamp // microseconds since epoch → int64
 )
 
-// buildParquetSchema maps PG field descriptors to a parquet schema.
+// buildParquetSchema maps PG field descriptors to a parquet schema whose columns
+// are in the same order as the query's columns.
 func buildParquetSchema(fds []pgconn.FieldDescription) (*parquet.Schema, []colType) {
 	cols := make([]colType, len(fds))
-	group := make(parquet.Group, len(fds))
+	group := columnGroup{
+		Group:  make(parquet.Group, len(fds)),
+		fields: make([]parquet.Field, len(fds)),
+	}
 
 	for i, fd := range fds {
 		var node parquet.Node
@@ -221,10 +239,35 @@ func buildParquetSchema(fds []pgconn.FieldDescription) (*parquet.Schema, []colTy
 			node = parquet.Optional(parquet.String())
 		}
 
-		group[fd.Name] = node
+		group.Group[fd.Name] = node
+		group.fields[i] = columnField{Node: node, name: fd.Name}
 	}
 
 	return parquet.NewSchema("wrds", group), cols
+}
+
+// columnGroup is a parquet group node that keeps its fields in insertion order;
+// parquet.Group is a map and sorts its fields by name.
+type columnGroup struct {
+	parquet.Group
+	fields []parquet.Field
+}
+
+func (g columnGroup) Fields() []parquet.Field { return g.fields }
+
+// columnField is a named field of a columnGroup.
+type columnField struct {
+	parquet.Node
+	name string
+}
+
+func (f columnField) Name() string { return f.name }
+
+func (f columnField) Value(base reflect.Value) reflect.Value {
+	if base.Kind() != reflect.Map {
+		return reflect.Value{}
+	}
+	return base.MapIndex(reflect.ValueOf(f.name))
 }
 
 var epoch = time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
