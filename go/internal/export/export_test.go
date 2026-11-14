@@ -93,11 +93,17 @@ func readParquet(t *testing.T, path string) arrow.Table {
 	return tbl
 }
 
-// exportParquet writes data through writeParquet and reads it back.
+// exportParquet writes data through writeParquet (numeric as DOUBLE) and reads it back.
 func exportParquet(t *testing.T, fds []pgconn.FieldDescription, data [][]any) arrow.Table {
 	t.Helper()
+	return exportParquetMode(t, fds, data, false)
+}
+
+// exportParquetMode is exportParquet with numeric as DECIMAL when decimal is set.
+func exportParquetMode(t *testing.T, fds []pgconn.FieldDescription, data [][]any, decimal bool) arrow.Table {
+	t.Helper()
 	out := filepath.Join(t.TempDir(), "out.parquet")
-	if err := writeParquet(&fakeRows{fds: fds, data: data}, out, nil); err != nil {
+	if err := writeParquet(&fakeRows{fds: fds, data: data}, out, decimal, nil); err != nil {
 		t.Fatalf("writeParquet: %v", err)
 	}
 	tbl := readParquet(t, out)
@@ -194,8 +200,9 @@ func TestNumericTypmod(t *testing.T) {
 }
 
 // TestWriteParquetNumeric is a regression test for numeric columns being written as
-// strings (#19): numeric(p,s) up to p = 16 must come back as DECIMAL, unconstrained and
-// wider numeric as DOUBLE.
+// strings (#19). By default every numeric is DOUBLE (#25); in decimal mode
+// numeric(p,s) up to p = 16 comes back as DECIMAL, unconstrained and wider numeric
+// as DOUBLE.
 func TestWriteParquetNumeric(t *testing.T) {
 	num := func(i int64, exp int32) pgtype.Numeric {
 		return pgtype.Numeric{Int: big.NewInt(i), Exp: exp, Valid: true}
@@ -214,38 +221,61 @@ func TestWriteParquetNumeric(t *testing.T) {
 		{pgtype.Numeric{Valid: true, NaN: true}, pgtype.Numeric{Valid: true, NaN: true}, nil, nil, nil},
 		{pgtype.Numeric{Valid: true, InfinityModifier: pgtype.NegativeInfinity}, nil, num(3, 2), num(1, 0), num(1, 0)},
 	}
-	tbl := exportParquet(t, fds, data)
-
-	wantTypes := []string{"float64", "decimal(10, 2)", "float64", "decimal(16, 6)", "float64"}
-	for i, w := range wantTypes {
-		if got := tbl.Schema().Field(i).Type.String(); got != w {
-			t.Errorf("%s type = %s, want %s", fds[i].Name, got, w)
-		}
+	tests := []struct {
+		name      string
+		decimal   bool
+		wantTypes []string
+		want      [][]string
+	}{
+		{
+			name:      "double",
+			wantTypes: []string{"float64", "float64", "float64", "float64", "float64"},
+			want: [][]string{
+				{"1.5", "12.34", "1.5", "-9.999999999999998e+09", "1.2345678901e+09"},
+				{"0", "-0.5", "0", "0", "0.5"},
+				{"NaN", "NaN", "(null)", "(null)", "(null)"},
+				{"-Inf", "(null)", "300", "1", "1"},
+			},
+		},
+		{
+			name:      "decimal",
+			decimal:   true,
+			wantTypes: []string{"float64", "decimal(10, 2)", "float64", "decimal(16, 6)", "float64"},
+			want: [][]string{
+				{"1.5", "12.34", "1.5", "-9999999999.999999", "1.2345678901e+09"},
+				{"0", "-0.50", "0", "0.000000", "0.5"},
+				{"NaN", "(null)", "(null)", "(null)", "(null)"},
+				{"-Inf", "(null)", "300", "1.000000", "1"},
+			},
+		},
 	}
-
-	want := [][]string{
-		{"1.5", "12.34", "1.5", "-9999999999.999999", "1.2345678901e+09"},
-		{"0", "-0.50", "0", "0.000000", "0.5"},
-		{"NaN", "(null)", "(null)", "(null)", "(null)"},
-		{"-Inf", "(null)", "300", "1.000000", "1"},
-	}
-	for r, row := range want {
-		for c, w := range row {
-			a, i := cell(t, tbl, c, r)
-			var got string
-			switch {
-			case a.IsNull(i):
-				got = "(null)"
-			case a.DataType().ID() == arrow.DECIMAL128:
-				dt := a.DataType().(*arrow.Decimal128Type)
-				got = a.(*array.Decimal128).Value(i).ToString(dt.Scale)
-			default:
-				got = a.ValueStr(i)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tbl := exportParquetMode(t, fds, data, tt.decimal)
+			for i, w := range tt.wantTypes {
+				if got := tbl.Schema().Field(i).Type.String(); got != w {
+					t.Errorf("%s type = %s, want %s", fds[i].Name, got, w)
+				}
 			}
-			if got != w {
-				t.Errorf("row %d %s = %s, want %s", r, fds[c].Name, got, w)
+			for r, row := range tt.want {
+				for c, w := range row {
+					a, i := cell(t, tbl, c, r)
+					var got string
+					switch {
+					case a.IsNull(i):
+						got = "(null)"
+					case a.DataType().ID() == arrow.DECIMAL128:
+						dt := a.DataType().(*arrow.Decimal128Type)
+						got = a.(*array.Decimal128).Value(i).ToString(dt.Scale)
+					default:
+						got = a.ValueStr(i)
+					}
+					if got != w {
+						t.Errorf("row %d %s = %s, want %s", r, fds[c].Name, got, w)
+					}
+				}
 			}
-		}
+		})
 	}
 }
 
@@ -365,7 +395,7 @@ func TestWriteParquetRowGroups(t *testing.T) {
 	var progress []int
 	out := filepath.Join(t.TempDir(), "rg.parquet")
 	fds := []pgconn.FieldDescription{{Name: "i", DataTypeOID: 20}}
-	if err := writeParquet(&fakeRows{fds: fds, data: data}, out, func(n int) { progress = append(progress, n) }); err != nil {
+	if err := writeParquet(&fakeRows{fds: fds, data: data}, out, false, func(n int) { progress = append(progress, n) }); err != nil {
 		t.Fatal(err)
 	}
 	if len(progress) != 2 || progress[0] != rowGroupSize || progress[1] != 2*rowGroupSize {
@@ -385,7 +415,7 @@ func TestWriteParquetRowGroups(t *testing.T) {
 func TestWriteParquetTypeMismatch(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "bad.parquet")
 	fds := []pgconn.FieldDescription{{Name: "d", DataTypeOID: 1082}}
-	err := writeParquet(&fakeRows{fds: fds, data: [][]any{{"2020-01-01"}}}, out, nil)
+	err := writeParquet(&fakeRows{fds: fds, data: [][]any{{"2020-01-01"}}}, out, false, nil)
 	if err == nil {
 		t.Fatal("writeParquet succeeded, want an error")
 	}

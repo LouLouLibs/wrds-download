@@ -32,8 +32,13 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	if a, ok := final.(*tui.App); ok && a.Err() != "" {
-		fmt.Fprintln(os.Stderr, a.Err())
+	if a, ok := final.(*tui.App); ok {
+		for _, c := range a.Commands() {
+			fmt.Println(c)
+		}
+		if a.Err() != "" {
+			fmt.Fprintln(os.Stderr, a.Err())
+		}
 	}
 	return nil
 }

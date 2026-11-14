@@ -25,6 +25,7 @@ var (
 	dlFormat string
 	dlLimit  int
 	dlDryRun bool
+	dlDecimal bool
 )
 
 var downloadCmd = &cobra.Command{
@@ -36,7 +37,8 @@ Examples:
   wrds download --schema crsp --table dsf --where "date='2020-01-02'" --out crsp_dsf.parquet
   wrds download --schema comp --table funda --columns "gvkey,datadate,sale" --out funda.parquet
   wrds download --query "SELECT permno, date, prc FROM crsp.dsf LIMIT 1000" --out out.parquet
-  wrds download --schema comp --table funda --out funda.csv --format csv`,
+  wrds download --schema comp --table funda --out funda.csv --format csv
+  wrds download --schema crsp --table msf --columns "permno,date,ret" --decimal --out msf.parquet`,
 	RunE: runDownload,
 }
 
@@ -53,6 +55,7 @@ func init() {
 	f.StringVar(&dlFormat, "format", "", "Output format: parquet or csv (inferred from extension if omitted)")
 	f.IntVar(&dlLimit, "limit", 0, "Limit number of rows (0 = no limit)")
 	f.BoolVar(&dlDryRun, "dry-run", false, "Preview the query, row count, and first 5 rows without downloading")
+	f.BoolVar(&dlDecimal, "decimal", false, "Parquet: write numeric(p,s) with p <= 16 as exact DECIMAL instead of DOUBLE")
 }
 
 func runDownload(cmd *cobra.Command, args []string) error {
@@ -76,7 +79,8 @@ func runDownload(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "Exporting to %s (%s)...\n", dlOut, format)
 
 	opts := export.Options{
-		Format: format,
+		Format:  format,
+		Decimal: dlDecimal,
 		ProgressFunc: func(rows int) {
 			fmt.Fprintf(os.Stderr, "Exported %d rows...\n", rows)
 		},

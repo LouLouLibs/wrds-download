@@ -90,7 +90,15 @@ wrds-dl download \
 wrds-dl download --schema crsp --table msf \
   --columns "permno,date,ret" --limit 1000 \
   --out crsp_msf_sample.csv
+
+# Exact DECIMAL instead of DOUBLE for numeric(p,s) columns (Go binary)
+wrds-dl download --schema crsp --table msf \
+  --columns "permno,date,prc,ret" --decimal \
+  --out crsp_msf_exact.parquet
 ```
+
+Parquet output writes Postgres `numeric` as DOUBLE unless you pass `--decimal`; see
+[go/README.md](go/README.md#exact-decimals) for the full type mapping.
 
 ## Authentication
 
