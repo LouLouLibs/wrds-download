@@ -89,6 +89,7 @@ wrds-dl download \
 
 #### Defaults and conventions
 - **Format**: Use Parquet unless the user asks for CSV. Parquet is smaller and faster.
+- **Numeric columns**: Parquet writes Postgres `numeric` as DOUBLE. Add `--decimal` (Go binary only) only if the user needs exact decimals: CRSP `ret`/`prc` and Fama-French factors then load as DECIMAL (`Dec64` in Julia, `Decimal` objects in pandas).
 - **Output path**: Name the file descriptively, e.g., `crsp_dsf_2020.parquet` or `comp_funda_2010_2023.parquet`.
 - **Columns**: Select only the columns the user needs. Don't use `*` on wide tables — ask what variables they need.
 - **Limit**: Use `--limit` for testing. Suggest `--limit 1000` if the user is exploring.

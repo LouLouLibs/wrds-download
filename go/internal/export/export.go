@@ -18,6 +18,7 @@ import (
 // Options controls the export behaviour.
 type Options struct {
 	Format       string         // "parquet" or "csv"
+	Decimal      bool           // parquet: write numeric(p,s), p <= 16, as exact DECIMAL instead of DOUBLE
 	ProgressFunc func(rows int) // called periodically with total rows exported so far
 }
 
@@ -61,7 +62,7 @@ func Export(query, outPath string, opts Options) error {
 	case "csv":
 		return writeCSV(rows, outPath, opts.ProgressFunc)
 	default:
-		return writeParquet(rows, outPath, opts.ProgressFunc)
+		return writeParquet(rows, outPath, opts.Decimal, opts.ProgressFunc)
 	}
 }
 

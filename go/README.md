@@ -143,6 +143,28 @@ wrds-dl download \
 
 Format is inferred from the output file extension (`.parquet` or `.csv`). Override with `--format`.
 
+### Exact decimals
+
+Parquet output writes every Postgres `numeric` as DOUBLE by default, which is what Julia,
+pandas and DuckDB compute with natively. Pass `--decimal` to keep `numeric(p,s)` columns
+with p ≤ 16 as exact `DECIMAL(p,s)` instead:
+
+```sh
+wrds-dl download \
+  --schema crsp \
+  --table msf \
+  --columns "permno,date,prc,ret" \
+  --decimal \
+  --out crsp_msf_exact.parquet
+```
+
+Which columns that affects depends on how WRDS declared them: CRSP `ret` (`numeric(10,6)`),
+`prc` (`numeric(11,5)`) and the Fama-French factors (`numeric(8,6)`) become DECIMAL, while most
+Compustat items (`numeric(18,4)`) stay DOUBLE, as do `float8` columns such as `crsp.dsf.shrout`.
+DECIMAL loads as `Dec64` in Julia's Parquet2.jl and as Python `Decimal` objects in pandas.
+DOUBLE holds any value with up to 15 significant digits exactly as Postgres prints it, which
+covers WRDS data in practice.
+
 ### All download flags
 
 | Flag | Description |
@@ -156,6 +178,7 @@ Format is inferred from the output file extension (`.parquet` or `.csv`). Overri
 | `--format` | `parquet` or `csv` (inferred from extension if omitted) |
 | `--limit` | Row limit, useful for testing (default: no limit) |
 | `--dry-run` | Preview query, row count, and first 5 rows without downloading |
+| `--decimal` | Parquet: write `numeric(p,s)` with p ≤ 16 as exact `DECIMAL(p,s)` instead of DOUBLE (see [Exact decimals](#exact-decimals)) |
 
 ### Table info
 
@@ -179,12 +202,12 @@ wrds-dl info --schema crsp --table dsf --json
   | Postgres | Parquet |
   |---|---|
   | `bool`, `int2`/`int4`, `int8`, `float4`, `float8` | BOOLEAN, INT32, INT64, FLOAT, DOUBLE |
-  | `numeric(p,s)`, p ≤ 16 | exact `DECIMAL(p,s)` stored as INT32/INT64 (`NaN` → NULL) |
-  | `numeric` (unconstrained — `sum`/`avg` and most WRDS columns) or p > 16 | DOUBLE (`NaN`/`±Infinity` kept) |
+  | `numeric` | DOUBLE (`NaN`/`±Infinity` kept) |
+  | `numeric(p,s)`, p ≤ 16, with `--decimal` | exact `DECIMAL(p,s)` stored as INT32/INT64 (`NaN` → NULL); unconstrained or wider `numeric` stays DOUBLE |
   | `date`, `time`, `timestamp`, `timestamptz` | DATE, TIME(µs), TIMESTAMP(µs) local / UTC-adjusted |
   | everything else (`text`, `varchar`, `json`, `uuid`, arrays, `interval`, …) | STRING holding the Postgres text output |
 
-  `char(n)` values are written without their padding, and repeated column names (`SELECT a.id, b.id …`) get `_1`, `_2`, … suffixes, as DuckDB does. Postgres `±infinity` dates and timestamps are written as the extreme values DuckDB uses for them. The DECIMAL limits are for Julia's Parquet2.jl, which reads DECIMAL into 16-digit `Dec64` and mis-reads negative byte-array decimals. Reader compatibility (pyarrow, DuckDB, Parquet2.jl) is checked by [`scripts/compat/run.sh`](../scripts/compat/README.md).
+  `char(n)` values are written without their padding, and repeated column names (`SELECT a.id, b.id …`) get `_1`, `_2`, … suffixes, as DuckDB does. Postgres `±infinity` dates and timestamps are written as the extreme values DuckDB uses for them. The DECIMAL limits of `--decimal` are for Julia's Parquet2.jl, which reads DECIMAL into 16-digit `Dec64` and mis-reads negative byte-array decimals. Reader compatibility (pyarrow, DuckDB, Parquet2.jl) is checked by [`scripts/compat/run.sh`](../scripts/compat/README.md).
 - **CSV**: rows are streamed directly to disk via Go's `encoding/csv`.
 
 ## Dependencies

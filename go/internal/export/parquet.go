@@ -48,8 +48,8 @@ const (
 	kindInt64
 	kindFloat32
 	kindFloat64
-	kindNumericFloat // unconstrained numeric → float64
-	kindDecimal      // numeric(p,s) → decimal128
+	kindNumericFloat // numeric → float64
+	kindDecimal      // numeric(p,s) → decimal128 (decimal mode)
 	kindDate
 	kindTime
 	kindTimestamp
@@ -62,7 +62,7 @@ type column struct {
 	scale int // kindDecimal: digits after the decimal point
 }
 
-// maxDecimalPrecision is the widest numeric(p,s) written as DECIMAL. Parquet2.jl
+// maxDecimalPrecision is the widest numeric(p,s) written as DECIMAL in decimal mode. Parquet2.jl
 // reads DECIMAL into DecFP.Dec64, which holds 16 significant digits: a wider value
 // makes the whole column fail to load. Wider numeric(p,s) is written as DOUBLE.
 const maxDecimalPrecision = 16
@@ -81,7 +81,7 @@ func numericTypmod(typmod int32) (precision, scale int, ok bool) {
 }
 
 // arrowColumn maps a PG field descriptor to its Arrow type.
-func arrowColumn(fd pgconn.FieldDescription) (column, arrow.DataType) {
+func arrowColumn(fd pgconn.FieldDescription, decimal bool) (column, arrow.DataType) {
 	c := column{name: fd.Name}
 	switch fd.DataTypeOID {
 	case pgtype.BoolOID:
@@ -100,10 +100,12 @@ func arrowColumn(fd pgconn.FieldDescription) (column, arrow.DataType) {
 		c.kind = kindFloat64
 		return c, arrow.PrimitiveTypes.Float64
 	case pgtype.NumericOID:
-		// numeric(p,s) is written exactly as DECIMAL; unconstrained numeric (what
-		// sum/avg and most WRDS columns give) and typmods DECIMAL cannot express
-		// fall back to DOUBLE.
-		if p, s, ok := numericTypmod(fd.TypeModifier); ok && p <= maxDecimalPrecision && s >= 0 && s <= p {
+		// numeric is DOUBLE by default: WRDS declares numeric(p,s) widths
+		// inconsistently (CRSP ret is numeric(10,6), Compustat numeric(18,4)), and
+		// DECIMAL loads as Dec64 in Julia and Python Decimal objects in pandas. In
+		// decimal mode, numeric(p,s) is written exactly as DECIMAL; unconstrained
+		// numeric (what sum/avg give) and typmods DECIMAL cannot express stay DOUBLE.
+		if p, s, ok := numericTypmod(fd.TypeModifier); decimal && ok && p <= maxDecimalPrecision && s >= 0 && s <= p {
 			c.kind, c.scale = kindDecimal, s
 			return c, &arrow.Decimal128Type{Precision: int32(p), Scale: int32(s)}
 		}
@@ -136,14 +138,14 @@ func arrowColumn(fd pgconn.FieldDescription) (column, arrow.DataType) {
 // row group per rowGroupSize rows. Columns that are not native Arrow types must have
 // been requested in text format (parquetResultFormats). On error the output file is
 // removed, so a failed export never leaves a valid-looking partial file behind.
-func writeParquet(rows pgx.Rows, outPath string, progressFn func(int)) (err error) {
+func writeParquet(rows pgx.Rows, outPath string, decimal bool, progressFn func(int)) (err error) {
 	fds := rows.FieldDescriptions()
 	names := uniqueNames(fds)
 	cols := make([]column, len(fds))
 	fields := make([]arrow.Field, len(fds))
 	for i, fd := range fds {
 		var typ arrow.DataType
-		cols[i], typ = arrowColumn(fd)
+		cols[i], typ = arrowColumn(fd, decimal)
 		cols[i].name = names[i]
 		fields[i] = arrow.Field{Name: names[i], Type: typ, Nullable: true}
 	}

@@ -1,6 +1,6 @@
 """Compare what each parquet reader saw against Postgres' own output.
 
-usage: python3 -I compare.py OUT_DIR [--types]
+usage: python3 -I compare.py OUT_DIR [--decimal] [--types]
 
 OUT_DIR/postgres/<case>.desc   column names and types (psql \\gdesc, tab-separated)
 OUT_DIR/postgres/<case>.copy   rows (COPY ... TO STDOUT, text format)
@@ -12,7 +12,8 @@ float(); decimal as a string; date as days since 1970-01-01; timestamp and time 
 microseconds (since the epoch / midnight).
 
 The expected value of each column is derived from the Postgres type and text output,
-following what wrds-dl promises (go/README.md, "Parquet"). Known reader limitations
+following what wrds-dl promises (go/README.md, "Parquet"); --decimal checks files
+written with `wrds-dl download --decimal`. Known reader limitations
 are listed in READER_LIMITS. Exit status is 1 if anything differs.
 """
 
@@ -91,7 +92,7 @@ def numeric_typmod(pg_type: str):
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
-def expected_kind(pg_type: str) -> str:
+def expected_kind(pg_type: str, decimal: bool) -> str:
     if pg_type == "boolean":
         return "bool"
     if pg_type in ("smallint", "integer", "bigint"):
@@ -102,7 +103,7 @@ def expected_kind(pg_type: str) -> str:
         return "float"
     if pg_type.startswith("numeric"):
         tm = numeric_typmod(pg_type)
-        if tm and tm[0] <= MAX_DECIMAL_PRECISION and 0 <= tm[1] <= tm[0]:
+        if decimal and tm and tm[0] <= MAX_DECIMAL_PRECISION and 0 <= tm[1] <= tm[0]:
             return "decimal"
         return "float"
     if pg_type == "date":
@@ -187,7 +188,7 @@ def load_postgres(out: str, case: str):
     return desc, rows
 
 
-def compare_case(out: str, case: str, reader: str, problems: list):
+def compare_case(out: str, case: str, reader: str, decimal: bool, problems: list):
     desc, rows = load_postgres(out, case)
     path = os.path.join(out, reader, case + ".json")
     if not os.path.exists(path):
@@ -210,7 +211,7 @@ def compare_case(out: str, case: str, reader: str, problems: list):
         label = f"{case}.{name} [{reader}]"
         if col["name"] != name:
             problems.append(f"{label}: column named {col['name']!r}, want {name!r}")
-        kind = expected_kind(pg_type)
+        kind = expected_kind(pg_type, decimal)
         if not kind_ok(reader, kind, col["kind"]):
             problems.append(f"{label}: {pg_type} read as {col['type']} ({col['kind']}), want {kind}")
             continue
@@ -229,12 +230,13 @@ def compare_case(out: str, case: str, reader: str, problems: list):
 def main():
     out = sys.argv[1]
     show_types = "--types" in sys.argv
+    decimal = "--decimal" in sys.argv
     readers = [r for r in READERS if os.path.isdir(os.path.join(out, r))]
     cases = sorted(f[:-5] for f in os.listdir(os.path.join(out, "postgres")) if f.endswith(".desc"))
     problems, types = [], {}
     for case in cases:
         for reader in readers:
-            res = compare_case(out, case, reader, problems)
+            res = compare_case(out, case, reader, decimal, problems)
             if case == "types" and res and "columns" in res:
                 types[reader] = [c["type"] for c in res["columns"]]
 
