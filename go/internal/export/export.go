@@ -6,15 +6,11 @@ import (
 	"fmt"
 	"math/big"
 	"os"
-	"reflect"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/parquet-go/parquet-go"
-	"github.com/parquet-go/parquet-go/compress/zstd"
 
 	"github.com/louloulibs/wrds-download/internal/db"
 )
@@ -51,7 +47,11 @@ func Export(query, outPath string, opts Options) error {
 	}
 	defer conn.Close(ctx)
 
-	rows, err := conn.Query(ctx, query)
+	var args []any
+	if format != "csv" {
+		args = append(args, parquetResultFormats)
+	}
+	rows, err := conn.Query(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("query: %w", err)
 	}
@@ -109,227 +109,6 @@ func writeCSV(rows pgx.Rows, outPath string, progressFn func(int)) error {
 
 	w.Flush()
 	return w.Error()
-}
-
-// writeParquet streams rows into a Parquet file using parquet-go.
-//
-// Rows are built as parquet.Row values with explicit definition levels so that
-// only a SQL NULL is written as null: going through Go values (e.g. map[string]any)
-// makes parquet-go treat zero values (0, 0.0, false, "") of optional columns as null.
-func writeParquet(rows pgx.Rows, outPath string, progressFn func(int)) error {
-	fds := rows.FieldDescriptions()
-
-	schema, colTypes := buildParquetSchema(fds)
-
-	f, err := os.Create(outPath)
-	if err != nil {
-		return fmt.Errorf("create parquet: %w", err)
-	}
-	defer f.Close()
-
-	writer := parquet.NewWriter(f,
-		schema,
-		parquet.Compression(&zstd.Codec{}),
-		parquet.DefaultEncodingFor(parquet.ByteArray, &parquet.Plain),
-	)
-
-	buf := make([]parquet.Row, 0, rowGroupSize)
-	total := 0
-
-	for rows.Next() {
-		vals, err := rows.Values()
-		if err != nil {
-			return fmt.Errorf("scan row: %w", err)
-		}
-
-		row := make(parquet.Row, len(fds))
-		for i, v := range vals {
-			row[i] = parquetValue(v, colTypes[i], i)
-		}
-		buf = append(buf, row)
-
-		if len(buf) >= rowGroupSize {
-			if _, err := writer.WriteRows(buf); err != nil {
-				return fmt.Errorf("write row group: %w", err)
-			}
-			total += len(buf)
-			buf = buf[:0]
-			if progressFn != nil {
-				progressFn(total)
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("rows: %w", err)
-	}
-
-	// Flush remaining rows.
-	if len(buf) > 0 {
-		if _, err := writer.WriteRows(buf); err != nil {
-			return fmt.Errorf("write final rows: %w", err)
-		}
-	}
-
-	return writer.Close()
-}
-
-// parquetValue converts a pgx-scanned value into a parquet value for the optional
-// leaf column at index col. Only a nil (SQL NULL) gets definition level 0.
-func parquetValue(v any, ct colType, col int) parquet.Value {
-	if v == nil {
-		return parquet.NullValue().Level(0, 0, col)
-	}
-	return parquet.ValueOf(convertValue(v, ct)).Level(0, 1, col)
-}
-
-// colType tags how we convert PG values for Parquet.
-type colType int
-
-const (
-	colString colType = iota
-	colBool
-	colInt32
-	colInt64
-	colFloat32
-	colFloat64
-	colDate      // days since epoch → int32
-	colTimestamp // microseconds since epoch → int64
-)
-
-// buildParquetSchema maps PG field descriptors to a parquet schema whose columns
-// are in the same order as the query's columns.
-func buildParquetSchema(fds []pgconn.FieldDescription) (*parquet.Schema, []colType) {
-	cols := make([]colType, len(fds))
-	group := columnGroup{
-		Group:  make(parquet.Group, len(fds)),
-		fields: make([]parquet.Field, len(fds)),
-	}
-
-	for i, fd := range fds {
-		var node parquet.Node
-
-		switch fd.DataTypeOID {
-		case 16: // bool
-			cols[i] = colBool
-			node = parquet.Optional(parquet.Leaf(parquet.BooleanType))
-		case 21: // int2
-			cols[i] = colInt32
-			node = parquet.Optional(parquet.Leaf(parquet.Int32Type))
-		case 23: // int4
-			cols[i] = colInt32
-			node = parquet.Optional(parquet.Leaf(parquet.Int32Type))
-		case 20: // int8
-			cols[i] = colInt64
-			node = parquet.Optional(parquet.Leaf(parquet.Int64Type))
-		case 700: // float4
-			cols[i] = colFloat32
-			node = parquet.Optional(parquet.Leaf(parquet.FloatType))
-		case 701: // float8
-			cols[i] = colFloat64
-			node = parquet.Optional(parquet.Leaf(parquet.DoubleType))
-		case 1082: // date
-			cols[i] = colDate
-			node = parquet.Optional(parquet.Date())
-		case 1114, 1184: // timestamp, timestamptz
-			cols[i] = colTimestamp
-			node = parquet.Optional(parquet.Timestamp(parquet.Microsecond))
-		default:
-			// text (25), varchar (1043), char (18, 1042), numeric (1700), etc.
-			cols[i] = colString
-			node = parquet.Optional(parquet.String())
-		}
-
-		group.Group[fd.Name] = node
-		group.fields[i] = columnField{Node: node, name: fd.Name}
-	}
-
-	return parquet.NewSchema("wrds", group), cols
-}
-
-// columnGroup is a parquet group node that keeps its fields in insertion order;
-// parquet.Group is a map and sorts its fields by name.
-type columnGroup struct {
-	parquet.Group
-	fields []parquet.Field
-}
-
-func (g columnGroup) Fields() []parquet.Field { return g.fields }
-
-// columnField is a named field of a columnGroup.
-type columnField struct {
-	parquet.Node
-	name string
-}
-
-func (f columnField) Name() string { return f.name }
-
-func (f columnField) Value(base reflect.Value) reflect.Value {
-	if base.Kind() != reflect.Map {
-		return reflect.Value{}
-	}
-	return base.MapIndex(reflect.ValueOf(f.name))
-}
-
-var epoch = time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
-
-// convertValue converts a pgx-scanned value to the appropriate Go type for parquet-go.
-func convertValue(v any, ct colType) any {
-	if v == nil {
-		return nil
-	}
-
-	switch ct {
-	case colBool:
-		if b, ok := v.(bool); ok {
-			return b
-		}
-	case colInt32:
-		switch n := v.(type) {
-		case int16:
-			return int32(n)
-		case int32:
-			return n
-		case int64:
-			return int32(n)
-		}
-	case colInt64:
-		switch n := v.(type) {
-		case int64:
-			return n
-		case int32:
-			return int64(n)
-		case int16:
-			return int64(n)
-		}
-	case colFloat32:
-		if f, ok := v.(float32); ok {
-			return f
-		}
-		if f, ok := v.(float64); ok {
-			return float32(f)
-		}
-	case colFloat64:
-		if f, ok := v.(float64); ok {
-			return f
-		}
-		if f, ok := v.(float32); ok {
-			return float64(f)
-		}
-	case colDate:
-		if t, ok := v.(time.Time); ok {
-			days := int32(t.Sub(epoch).Hours() / 24)
-			return days
-		}
-	case colTimestamp:
-		if t, ok := v.(time.Time); ok {
-			return t.Sub(epoch).Microseconds()
-		}
-	case colString:
-		return formatValue(v)
-	}
-
-	// Fallback: stringify.
-	return formatValue(v)
 }
 
 // formatValue converts any value to its string representation.

@@ -31,7 +31,7 @@ Same CLI interface — pick whichever fits your environment:
 
 | | [Go](go/) | [Python](python/) |
 |---|---|---|
-| **Install** | Pre-built binary (~19 MB) | `uv tool install` / `uv run` |
+| **Install** | Pre-built binary (~40 MB) | `uv tool install` / `uv run` |
 | **TUI browser** | Yes | No |
 | **CLI commands** | `download`, `info` | `download`, `info` |
 | **Dependencies** | None (static binary) | Python 3.10+, `uv` |

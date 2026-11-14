@@ -7,7 +7,7 @@ Full-featured terminal tool for browsing and downloading data from the [WRDS](ht
 - **TUI** — browse schemas and tables, inspect column metadata, trigger downloads without leaving the terminal
 - **CLI** — scriptable `download` command with structured flags or raw SQL
 - **`info` command** — inspect table metadata (columns, types, row count) from the command line or scripts
-- **Parquet output** — streams rows via pgx and writes Parquet with ZSTD compression using parquet-go (pure Go)
+- **Parquet output** — streams rows via pgx and writes Parquet with ZSTD compression through Apache Arrow (arrow-go, pure Go)
 - **CSV output** — streams rows to CSV via encoding/csv
 - **Progress feedback** — live row count during large exports (CLI and TUI)
 - **Dry-run mode** — preview the query, row count, and first 5 rows before committing to a download
@@ -174,7 +174,17 @@ wrds-dl info --schema crsp --table dsf --json
 `wrds-dl` connects directly to the WRDS PostgreSQL server using [pgx](https://github.com/jackc/pgx). All operations go through a single pooled connection (limited to 1 to avoid triggering multiple Duo 2FA prompts).
 
 **Downloads** stream rows from Postgres and write them incrementally:
-- **Parquet**: rows are batched (10,000 per row group) and written with ZSTD compression via [parquet-go](https://github.com/parquet-go/parquet-go). String columns use PLAIN encoding for broad compatibility (R, Python, Julia).
+- **Parquet**: rows are built into Arrow record batches (10,000 rows per row group) and written with ZSTD compression via [arrow-go](https://github.com/apache/arrow-go)'s `pqarrow`. Type mapping:
+
+  | Postgres | Parquet |
+  |---|---|
+  | `bool`, `int2`/`int4`, `int8`, `float4`, `float8` | BOOLEAN, INT32, INT64, FLOAT, DOUBLE |
+  | `numeric(p,s)`, p ≤ 16 | exact `DECIMAL(p,s)` stored as INT32/INT64 (`NaN` → NULL) |
+  | `numeric` (unconstrained — `sum`/`avg` and most WRDS columns) or p > 16 | DOUBLE (`NaN`/`±Infinity` kept) |
+  | `date`, `time`, `timestamp`, `timestamptz` | DATE, TIME(µs), TIMESTAMP(µs) local / UTC-adjusted |
+  | everything else (`text`, `varchar`, `json`, `uuid`, arrays, `interval`, …) | STRING holding the Postgres text output |
+
+  Postgres `±infinity` dates and timestamps are written as the extreme values DuckDB uses for them. The DECIMAL limits are for Julia's Parquet2.jl, which reads DECIMAL into 16-digit `Dec64` and mis-reads negative byte-array decimals.
 - **CSV**: rows are streamed directly to disk via Go's `encoding/csv`.
 
 ## Dependencies
@@ -182,7 +192,7 @@ wrds-dl info --schema crsp --table dsf --json
 | Package | Purpose |
 |---|---|
 | [`jackc/pgx/v5`](https://github.com/jackc/pgx) | PostgreSQL driver — all queries and data streaming |
-| [`parquet-go/parquet-go`](https://github.com/parquet-go/parquet-go) | Parquet file writing with ZSTD compression (pure Go) |
+| [`apache/arrow-go`](https://github.com/apache/arrow-go) | Arrow record batches and Parquet writing (`pqarrow`) with ZSTD compression (pure Go) |
 | [`charmbracelet/bubbletea`](https://github.com/charmbracelet/bubbletea) | TUI framework |
 | [`charmbracelet/bubbles`](https://github.com/charmbracelet/bubbles) | List, text-input, spinner components |
 | [`charmbracelet/lipgloss`](https://github.com/charmbracelet/lipgloss) | Terminal layout and styling |
