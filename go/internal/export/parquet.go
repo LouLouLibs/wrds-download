@@ -1,6 +1,7 @@
 package export
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"math/big"
@@ -40,7 +41,8 @@ var parquetResultFormats = pgx.QueryResultFormatsByOID{
 type colKind int
 
 const (
-	kindText colKind = iota // Postgres text output → string
+	kindText   colKind = iota // Postgres text output → string
+	kindBpchar                // char(n) text output without its padding → string
 	kindBool
 	kindInt32
 	kindInt64
@@ -119,6 +121,11 @@ func arrowColumn(fd pgconn.FieldDescription) (column, arrow.DataType) {
 	case pgtype.TimestamptzOID:
 		c.kind = kindTimestamp
 		return c, &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}
+	case pgtype.BPCharOID:
+		// Trailing spaces of char(n) are insignificant in Postgres (length('AB'::char(4))
+		// is 2); written padded, they break joins against text keys.
+		c.kind = kindBpchar
+		return c, arrow.BinaryTypes.String
 	default:
 		c.kind = kindText
 		return c, arrow.BinaryTypes.String
@@ -131,12 +138,14 @@ func arrowColumn(fd pgconn.FieldDescription) (column, arrow.DataType) {
 // removed, so a failed export never leaves a valid-looking partial file behind.
 func writeParquet(rows pgx.Rows, outPath string, progressFn func(int)) (err error) {
 	fds := rows.FieldDescriptions()
+	names := uniqueNames(fds)
 	cols := make([]column, len(fds))
 	fields := make([]arrow.Field, len(fds))
 	for i, fd := range fds {
 		var typ arrow.DataType
 		cols[i], typ = arrowColumn(fd)
-		fields[i] = arrow.Field{Name: fd.Name, Type: typ, Nullable: true}
+		cols[i].name = names[i]
+		fields[i] = arrow.Field{Name: names[i], Type: typ, Nullable: true}
 	}
 	schema := arrow.NewSchema(fields, nil)
 
@@ -213,6 +222,33 @@ func writeParquet(rows pgx.Rows, outPath string, progressFn func(int)) (err erro
 	return writer.Close()
 }
 
+// uniqueNames returns the column names with repeats (SELECT a.id, b.id ...) renamed
+// to name_1, name_2, ..., skipping suffixes another column already uses, as DuckDB
+// does. Parquet2.jl silently drops all but one of same-named columns.
+func uniqueNames(fds []pgconn.FieldDescription) []string {
+	taken := make(map[string]bool, len(fds))
+	for _, fd := range fds {
+		taken[fd.Name] = true
+	}
+	seen := make(map[string]bool, len(fds))
+	names := make([]string, len(fds))
+	for i, fd := range fds {
+		name := fd.Name
+		if seen[name] {
+			for k := 1; ; k++ {
+				if cand := fmt.Sprintf("%s_%d", fd.Name, k); !taken[cand] {
+					name = cand
+					break
+				}
+			}
+			taken[name] = true
+		}
+		seen[name] = true
+		names[i] = name
+	}
+	return names
+}
+
 // Postgres ±infinity dates and timestamps are written as the extreme values DuckDB
 // uses for them, so they still sort after (before) every finite value.
 const (
@@ -224,12 +260,15 @@ const (
 // A value that does not match the column's type is an error rather than being
 // written as something else.
 func appendValue(b array.Builder, c column, v any, raw []byte) error {
-	if c.kind == kindText {
+	if c.kind == kindText || c.kind == kindBpchar {
 		if raw == nil {
 			b.AppendNull()
-		} else {
-			b.(*array.StringBuilder).BinaryBuilder.Append(raw)
+			return nil
 		}
+		if c.kind == kindBpchar {
+			raw = bytes.TrimRight(raw, " ")
+		}
+		b.(*array.StringBuilder).BinaryBuilder.Append(raw)
 		return nil
 	}
 	if v == nil {
