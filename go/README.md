@@ -174,7 +174,7 @@ wrds-dl info --schema crsp --table dsf --json
 `wrds-dl` connects directly to the WRDS PostgreSQL server using [pgx](https://github.com/jackc/pgx). All operations go through a single pooled connection (limited to 1 to avoid triggering multiple Duo 2FA prompts).
 
 **Downloads** stream rows from Postgres and write them incrementally:
-- **Parquet**: rows are batched (10,000 per row group) and written with ZSTD compression via [parquet-go](https://github.com/parquet-go/parquet-go). String columns use PLAIN encoding for broad compatibility (R, Python, Julia).
+- **Parquet**: rows are batched (10,000 per row group) and written with ZSTD compression via [parquet-go](https://github.com/parquet-go/parquet-go). String columns use PLAIN encoding for broad compatibility (R, Python, Julia). `numeric(p,s)` columns are written as exact `DECIMAL(p,s)` (p ≤ 38; `NaN` becomes NULL); unconstrained `numeric` — what `sum`/`avg` and most WRDS numeric columns give — is written as `DOUBLE`.
 - **CSV**: rows are streamed directly to disk via Go's `encoding/csv`.
 
 ## Dependencies

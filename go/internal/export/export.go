@@ -119,7 +119,7 @@ func writeCSV(rows pgx.Rows, outPath string, progressFn func(int)) error {
 func writeParquet(rows pgx.Rows, outPath string, progressFn func(int)) error {
 	fds := rows.FieldDescriptions()
 
-	schema, colTypes := buildParquetSchema(fds)
+	schema, cols := buildParquetSchema(fds)
 
 	f, err := os.Create(outPath)
 	if err != nil {
@@ -144,7 +144,7 @@ func writeParquet(rows pgx.Rows, outPath string, progressFn func(int)) error {
 
 		row := make(parquet.Row, len(fds))
 		for i, v := range vals {
-			row[i] = parquetValue(v, colTypes[i], i)
+			row[i] = parquetValue(v, cols[i], i)
 		}
 		buf = append(buf, row)
 
@@ -174,12 +174,24 @@ func writeParquet(rows pgx.Rows, outPath string, progressFn func(int)) error {
 }
 
 // parquetValue converts a pgx-scanned value into a parquet value for the optional
-// leaf column at index col. Only a nil (SQL NULL) gets definition level 0.
-func parquetValue(v any, ct colType, col int) parquet.Value {
-	if v == nil {
-		return parquet.NullValue().Level(0, 0, col)
+// leaf column at index col. A SQL NULL, and a value the column cannot represent
+// (NaN in a decimal column), gets definition level 0.
+func parquetValue(v any, c column, col int) parquet.Value {
+	var pv parquet.Value
+	if c.typ == colDecimal {
+		b := decimalBytes(v, c.scale, c.size)
+		if b == nil {
+			return parquet.NullValue().Level(0, 0, col)
+		}
+		pv = parquet.FixedLenByteArrayValue(b)
+	} else {
+		cv := convertValue(v, c.typ)
+		if cv == nil {
+			return parquet.NullValue().Level(0, 0, col)
+		}
+		pv = parquet.ValueOf(cv)
 	}
-	return parquet.ValueOf(convertValue(v, ct)).Level(0, 1, col)
+	return pv.Level(0, 1, col)
 }
 
 // colType tags how we convert PG values for Parquet.
@@ -194,12 +206,48 @@ const (
 	colFloat64
 	colDate      // days since epoch → int32
 	colTimestamp // microseconds since epoch → int64
+	colDecimal   // numeric(p,s) → big-endian two's complement unscaled value
 )
+
+// column describes how one PG column is written to Parquet.
+type column struct {
+	typ   colType
+	scale int // colDecimal: digits after the decimal point
+	size  int // colDecimal: bytes of the fixed-length unscaled value
+}
+
+// maxDecimalPrecision is the widest DECIMAL that common Parquet readers
+// (DuckDB, Arrow decimal128) accept.
+const maxDecimalPrecision = 38
+
+// numericTypmod decodes the precision and scale of a numeric(p,s) column from its
+// type modifier; ok is false for an unconstrained numeric (typmod -1).
+// See numeric_typmod_precision/scale in postgres src/backend/utils/adt/numeric.c.
+func numericTypmod(typmod int32) (precision, scale int, ok bool) {
+	if typmod < 4 { // VARHDRSZ
+		return 0, 0, false
+	}
+	t := typmod - 4
+	precision = int((t >> 16) & 0xffff)
+	scale = int(((t & 0x7ff) ^ 1024) - 1024) // 11-bit signed since PG 15
+	return precision, scale, true
+}
+
+// decimalSize is the number of bytes a two's complement integer needs to hold
+// any value of the given decimal precision.
+func decimalSize(precision int) int {
+	limit := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(precision)), nil)
+	n := 1
+	for new(big.Int).Lsh(big.NewInt(1), uint(8*n-1)).Cmp(limit) < 0 {
+		n++
+	}
+	return n
+}
 
 // buildParquetSchema maps PG field descriptors to a parquet schema whose columns
 // are in the same order as the query's columns.
-func buildParquetSchema(fds []pgconn.FieldDescription) (*parquet.Schema, []colType) {
-	cols := make([]colType, len(fds))
+func buildParquetSchema(fds []pgconn.FieldDescription) (*parquet.Schema, []column) {
+	cols := make([]column, len(fds))
 	group := columnGroup{
 		Group:  make(parquet.Group, len(fds)),
 		fields: make([]parquet.Field, len(fds)),
@@ -210,32 +258,44 @@ func buildParquetSchema(fds []pgconn.FieldDescription) (*parquet.Schema, []colTy
 
 		switch fd.DataTypeOID {
 		case 16: // bool
-			cols[i] = colBool
+			cols[i].typ = colBool
 			node = parquet.Optional(parquet.Leaf(parquet.BooleanType))
 		case 21: // int2
-			cols[i] = colInt32
+			cols[i].typ = colInt32
 			node = parquet.Optional(parquet.Leaf(parquet.Int32Type))
 		case 23: // int4
-			cols[i] = colInt32
+			cols[i].typ = colInt32
 			node = parquet.Optional(parquet.Leaf(parquet.Int32Type))
 		case 20: // int8
-			cols[i] = colInt64
+			cols[i].typ = colInt64
 			node = parquet.Optional(parquet.Leaf(parquet.Int64Type))
 		case 700: // float4
-			cols[i] = colFloat32
+			cols[i].typ = colFloat32
 			node = parquet.Optional(parquet.Leaf(parquet.FloatType))
 		case 701: // float8
-			cols[i] = colFloat64
+			cols[i].typ = colFloat64
 			node = parquet.Optional(parquet.Leaf(parquet.DoubleType))
 		case 1082: // date
-			cols[i] = colDate
+			cols[i].typ = colDate
 			node = parquet.Optional(parquet.Date())
 		case 1114, 1184: // timestamp, timestamptz
-			cols[i] = colTimestamp
+			cols[i].typ = colTimestamp
 			node = parquet.Optional(parquet.Timestamp(parquet.Microsecond))
+		case 1700: // numeric
+			// numeric(p,s) is written exactly as DECIMAL; unconstrained numeric (what
+			// sum/avg and most WRDS columns give) and typmods DECIMAL cannot express
+			// fall back to DOUBLE.
+			if p, s, ok := numericTypmod(fd.TypeModifier); ok && p <= maxDecimalPrecision && s >= 0 && s <= p {
+				size := decimalSize(p)
+				cols[i] = column{typ: colDecimal, scale: s, size: size}
+				node = parquet.Optional(parquet.Decimal(s, p, parquet.FixedLenByteArrayType(size)))
+			} else {
+				cols[i].typ = colFloat64
+				node = parquet.Optional(parquet.Leaf(parquet.DoubleType))
+			}
 		default:
-			// text (25), varchar (1043), char (18, 1042), numeric (1700), etc.
-			cols[i] = colString
+			// text (25), varchar (1043), char (18, 1042), etc.
+			cols[i].typ = colString
 			node = parquet.Optional(parquet.String())
 		}
 
@@ -268,6 +328,31 @@ func (f columnField) Value(base reflect.Value) reflect.Value {
 		return reflect.Value{}
 	}
 	return base.MapIndex(reflect.ValueOf(f.name))
+}
+
+// decimalBytes returns the unscaled value of a numeric at the given scale as a
+// size-byte big-endian two's complement integer, or nil for a value DECIMAL cannot
+// hold (NULL, NaN).
+func decimalBytes(v any, scale, size int) []byte {
+	n, ok := v.(pgtype.Numeric)
+	if !ok || !n.Valid || n.NaN || n.InfinityModifier != pgtype.Finite {
+		return nil
+	}
+	u := new(big.Int)
+	if n.Int != nil {
+		u.Set(n.Int)
+	}
+	// Postgres stores values of a numeric(p,s) column at scale s, so the shift is
+	// never negative in practice; truncate if it is.
+	if shift := int64(n.Exp) + int64(scale); shift > 0 {
+		u.Mul(u, new(big.Int).Exp(big.NewInt(10), big.NewInt(shift), nil))
+	} else if shift < 0 {
+		u.Quo(u, new(big.Int).Exp(big.NewInt(10), big.NewInt(-shift), nil))
+	}
+	if u.Sign() < 0 {
+		u.Add(u, new(big.Int).Lsh(big.NewInt(1), uint(8*size)))
+	}
+	return u.FillBytes(make([]byte, size))
 }
 
 var epoch = time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -309,11 +394,19 @@ func convertValue(v any, ct colType) any {
 			return float32(f)
 		}
 	case colFloat64:
-		if f, ok := v.(float64); ok {
+		switch f := v.(type) {
+		case float64:
 			return f
-		}
-		if f, ok := v.(float32); ok {
+		case float32:
 			return float64(f)
+		case pgtype.Numeric:
+			// NaN and ±Infinity map to the float values.
+			if fv, err := f.Float64Value(); err == nil {
+				if !fv.Valid {
+					return nil
+				}
+				return fv.Float64
+			}
 		}
 	case colDate:
 		if t, ok := v.(time.Time); ok {

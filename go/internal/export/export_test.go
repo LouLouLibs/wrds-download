@@ -2,6 +2,7 @@ package export
 
 import (
 	"io"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -184,6 +185,127 @@ func TestWriteParquetZeroValues(t *testing.T) {
 	for i, v := range got[1] {
 		if !v.IsNull() {
 			t.Errorf("row 1 %s = %v, want NULL", fds[i].Name, v)
+		}
+	}
+}
+
+func TestNumericTypmod(t *testing.T) {
+	tests := []struct {
+		name         string
+		typmod       int32
+		wantP, wantS int
+		wantOK       bool
+	}{
+		{"unconstrained", -1, 0, 0, false},
+		{"numeric(10,2)", (10<<16 | 2) + 4, 10, 2, true},
+		{"numeric(38,0)", (38 << 16) + 4, 38, 0, true},
+		{"numeric(2,-3)", (2<<16 | (-3 & 0x7ff)) + 4, 2, -3, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, s, ok := numericTypmod(tt.typmod)
+			if p != tt.wantP || s != tt.wantS || ok != tt.wantOK {
+				t.Errorf("numericTypmod(%d) = (%d, %d, %v), want (%d, %d, %v)",
+					tt.typmod, p, s, ok, tt.wantP, tt.wantS, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestDecimalSize(t *testing.T) {
+	for p, want := range map[int]int{1: 1, 2: 1, 3: 2, 9: 4, 10: 5, 18: 8, 19: 9, 38: 16} {
+		if got := decimalSize(p); got != want {
+			t.Errorf("decimalSize(%d) = %d, want %d", p, got, want)
+		}
+	}
+}
+
+// TestWriteParquetNumeric is a regression test for numeric columns being written as
+// strings: numeric(p,s) must come back as DECIMAL, unconstrained numeric as DOUBLE.
+func TestWriteParquetNumeric(t *testing.T) {
+	num := func(i int64, exp int32) pgtype.Numeric {
+		return pgtype.Numeric{Int: big.NewInt(i), Exp: exp, Valid: true}
+	}
+	fds := []pgconn.FieldDescription{
+		{Name: "n", DataTypeOID: 1700, TypeModifier: -1},
+		{Name: "n_typed", DataTypeOID: 1700, TypeModifier: (10<<16 | 2) + 4},
+		{Name: "n_wide", DataTypeOID: 1700, TypeModifier: (60<<16 | 2) + 4},
+	}
+	data := [][]any{
+		{num(15, -1), num(1234, -2), num(15, -1)},
+		{num(0, 0), num(-5, -1), num(0, 0)},
+		{pgtype.Numeric{Valid: true, NaN: true}, pgtype.Numeric{Valid: true, NaN: true}, nil},
+		{pgtype.Numeric{Valid: true, InfinityModifier: pgtype.NegativeInfinity}, nil, num(3, 2)},
+	}
+
+	out := filepath.Join(t.TempDir(), "numeric.parquet")
+	if err := writeParquet(&fakeRows{fds: fds, data: data}, out, nil); err != nil {
+		t.Fatalf("writeParquet: %v", err)
+	}
+
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pf, err := parquet.OpenFile(f, st.Size())
+	if err != nil {
+		t.Fatalf("open parquet: %v", err)
+	}
+
+	fields := pf.Schema().Fields()
+	if k := fields[0].Type().Kind(); k != parquet.Double {
+		t.Errorf("n kind = %v, want DOUBLE", k)
+	}
+	dec := fields[1].Type().LogicalType().Decimal
+	if dec == nil || dec.Precision != 10 || dec.Scale != 2 {
+		t.Errorf("n_typed logical type = %v, want DECIMAL(10,2)", fields[1].Type().LogicalType())
+	}
+	if k := fields[2].Type().Kind(); k != parquet.Double {
+		t.Errorf("n_wide kind = %v, want DOUBLE (precision > 38)", k)
+	}
+
+	reader := parquet.NewReader(pf)
+	defer reader.Close()
+	got := make([]parquet.Row, len(data))
+	n, err := reader.ReadRows(got)
+	if err != nil && err != io.EOF {
+		t.Fatalf("read rows: %v", err)
+	}
+	if n != len(data) {
+		t.Fatalf("read %d rows, want %d", n, len(data))
+	}
+
+	// Unconstrained and too-wide numeric: float64, with NaN/Infinity kept.
+	for r, want := range []float64{1.5, 0, math.NaN(), math.Inf(-1)} {
+		v := got[r][0]
+		if v.IsNull() || !(v.Double() == want || math.IsNaN(want) && math.IsNaN(v.Double())) {
+			t.Errorf("row %d n = %v, want %v", r, v, want)
+		}
+	}
+	if v := got[3][2]; v.IsNull() || v.Double() != 300 {
+		t.Errorf("row 3 n_wide = %v, want 300", v)
+	}
+	if !got[2][2].IsNull() {
+		t.Errorf("row 2 n_wide = %v, want NULL", got[2][2])
+	}
+
+	// numeric(10,2): unscaled big-endian two's complement in 5 bytes; NaN → NULL.
+	for r, want := range map[int][]byte{
+		0: {0, 0, 0, 0x04, 0xd2},          // 12.34 → 1234
+		1: {0xff, 0xff, 0xff, 0xff, 0xce}, // -0.5 → -50
+	} {
+		if v := got[r][1]; v.IsNull() || string(v.ByteArray()) != string(want) {
+			t.Errorf("row %d n_typed = %x, want %x", r, v.ByteArray(), want)
+		}
+	}
+	for _, r := range []int{2, 3} {
+		if !got[r][1].IsNull() {
+			t.Errorf("row %d n_typed = %v, want NULL", r, got[r][1])
 		}
 	}
 }
