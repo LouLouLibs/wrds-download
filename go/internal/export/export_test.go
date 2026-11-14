@@ -2,6 +2,7 @@ package export
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/big"
 	"os"
@@ -329,7 +330,7 @@ func TestWriteParquetText(t *testing.T) {
 		{Name: "iv", DataTypeOID: 1186}, // interval
 	}
 	data := [][]any{
-		{`{"a": 1}`, "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "{1,2,NULL}", "AB  ", "1 day 02:00:00"},
+		{`{"a": 1}`, "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "{1,2,NULL}", "AB", "1 day 02:00:00"},
 		{nil, nil, nil, nil, nil},
 	}
 	tbl := exportParquet(t, fds, data)
@@ -390,5 +391,69 @@ func TestWriteParquetTypeMismatch(t *testing.T) {
 	}
 	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
 		t.Errorf("output file left behind after error: %v", statErr)
+	}
+}
+
+func TestUniqueNames(t *testing.T) {
+	fd := func(names ...string) []pgconn.FieldDescription {
+		fds := make([]pgconn.FieldDescription, len(names))
+		for i, n := range names {
+			fds[i].Name = n
+		}
+		return fds
+	}
+	tests := []struct {
+		in, want []string
+	}{
+		{[]string{"a", "b"}, []string{"a", "b"}},
+		{[]string{"id", "id"}, []string{"id", "id_1"}},
+		{[]string{"id", "id", "id"}, []string{"id", "id_1", "id_2"}},
+		// an existing id_1 keeps its name; the repeat skips to id_2
+		{[]string{"id", "id", "id_1"}, []string{"id", "id_2", "id_1"}},
+		{[]string{"x", "x_1", "x", "x_1"}, []string{"x", "x_1", "x_2", "x_1_1"}},
+	}
+	for _, tt := range tests {
+		got := uniqueNames(fd(tt.in...))
+		if fmt.Sprint(got) != fmt.Sprint(tt.want) {
+			t.Errorf("uniqueNames(%v) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestWriteParquetNamesAndBpchar is a regression test for #23: repeated column names
+// are deduplicated and char(n) values lose their padding.
+func TestWriteParquetNamesAndBpchar(t *testing.T) {
+	fds := []pgconn.FieldDescription{
+		{Name: "id", DataTypeOID: 23},
+		{Name: "id", DataTypeOID: 23},
+		{Name: "ch", DataTypeOID: 1042},
+		{Name: "vc", DataTypeOID: 1043},
+	}
+	data := [][]any{
+		{int32(1), int32(2), "AB  ", "AB  "},
+		{nil, nil, "    ", ""},
+		{nil, nil, nil, nil},
+	}
+	tbl := exportParquet(t, fds, data)
+
+	for i, w := range []string{"id", "id_1", "ch", "vc"} {
+		if got := tbl.Schema().Field(i).Name; got != w {
+			t.Errorf("column %d = %q, want %q", i, got, w)
+		}
+	}
+	if a, r := cell(t, tbl, 1, 0); a.(*array.Int32).Value(r) != 2 {
+		t.Errorf("id_1 = %d, want 2", a.(*array.Int32).Value(r))
+	}
+	// char(n) is trimmed (all-blank becomes ""); varchar keeps its spaces.
+	for r, want := range [][2]string{{"AB", "AB  "}, {"", ""}} {
+		for c := 2; c <= 3; c++ {
+			a, i := cell(t, tbl, c, r)
+			if got := a.(*array.String).Value(i); a.IsNull(i) || got != want[c-2] {
+				t.Errorf("row %d %s = %q, want %q", r, fds[c].Name, got, want[c-2])
+			}
+		}
+	}
+	if a, i := cell(t, tbl, 2, 2); !a.IsNull(i) {
+		t.Errorf("row 2 ch = %q, want NULL", a.ValueStr(i))
 	}
 }

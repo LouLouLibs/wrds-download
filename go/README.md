@@ -184,7 +184,7 @@ wrds-dl info --schema crsp --table dsf --json
   | `date`, `time`, `timestamp`, `timestamptz` | DATE, TIME(µs), TIMESTAMP(µs) local / UTC-adjusted |
   | everything else (`text`, `varchar`, `json`, `uuid`, arrays, `interval`, …) | STRING holding the Postgres text output |
 
-  Postgres `±infinity` dates and timestamps are written as the extreme values DuckDB uses for them. The DECIMAL limits are for Julia's Parquet2.jl, which reads DECIMAL into 16-digit `Dec64` and mis-reads negative byte-array decimals.
+  `char(n)` values are written without their padding, and repeated column names (`SELECT a.id, b.id …`) get `_1`, `_2`, … suffixes, as DuckDB does. Postgres `±infinity` dates and timestamps are written as the extreme values DuckDB uses for them. The DECIMAL limits are for Julia's Parquet2.jl, which reads DECIMAL into 16-digit `Dec64` and mis-reads negative byte-array decimals. Reader compatibility (pyarrow, DuckDB, Parquet2.jl) is checked by [`scripts/compat/run.sh`](../scripts/compat/README.md).
 - **CSV**: rows are streamed directly to disk via Go's `encoding/csv`.
 
 ## Dependencies
