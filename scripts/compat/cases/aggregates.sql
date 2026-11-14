@@ -1,0 +1,1 @@
+SELECT count(*) AS n, sum(i4) AS sum_int, sum(n10_2) AS sum_dec, avg(i2) AS avg_int, avg(f8) FILTER (WHERE id < 3) AS avg_float, min(d) AS min_d, max(tstz) FILTER (WHERE id < 5) AS max_tstz FROM types
