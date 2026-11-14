@@ -29,7 +29,16 @@ Why: WRDS declares `numeric` widths inconsistently, so under 0.4.0 one table cou
 DECIMAL and DOUBLE (`crsp.dsf` `prc` DECIMAL next to `shrout` DOUBLE), and DECIMAL is slow or
 awkward in Julia and pandas.
 
-CSV output is unchanged. The TUI writes DOUBLE; it has no `--decimal` equivalent.
+CSV output is unchanged. In the TUI, the download dialog's "Exact decimals" field is the
+equivalent of `--decimal` (default `n`).
+
+### TUI: from browsing to a CLI command
+
+- In the Preview pane, `j`/`k` move a column cursor and `space` marks columns; the download
+  dialog's SELECT field starts with the marked columns.
+- The download dialog shows the equivalent `wrds-dl download …` command as you type;
+  `ctrl+y` copies it to the clipboard (OSC 52), and copied commands are printed to stdout
+  when you quit.
 
 ### Other
 

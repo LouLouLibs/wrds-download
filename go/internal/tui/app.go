@@ -16,6 +16,7 @@ import (
 	"github.com/louloulibs/wrds-download/internal/config"
 	"github.com/louloulibs/wrds-download/internal/db"
 	"github.com/louloulibs/wrds-download/internal/export"
+	"github.com/muesli/termenv"
 )
 
 // pane identifies which panel is focused.
@@ -76,7 +77,9 @@ type App struct {
 	schemaList       list.Model
 	tableList        list.Model
 	previewMeta      *db.TableMeta
-	previewScroll    int
+	previewScroll    int             // first visible row of the column list
+	previewCursor    int             // highlighted row of the (filtered) column list
+	selectedCols     map[string]bool // columns marked with space, pre-filled into the download form
 	previewFilter    textinput.Model
 	previewFiltering bool
 
@@ -99,6 +102,8 @@ type App struct {
 	databasesLoading bool
 
 	lastListW, lastListH int
+
+	commands []string // CLI commands copied with ctrl+y, printed when the TUI exits
 }
 
 // restrictPagingKeys removes arrow/letter bindings from the list's page nav,
@@ -284,7 +289,8 @@ func (a *App) startDownload(msg DlSubmitMsg) tea.Cmd {
 			query += fmt.Sprintf(" LIMIT %d", msg.Limit)
 		}
 		opts := export.Options{
-			Format: msg.Format,
+			Format:  msg.Format,
+			Decimal: msg.Decimal,
 			ProgressFunc: func(rows int) {
 				select {
 				case progressCh <- rows:
@@ -402,14 +408,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.tableList.SetItems(items)
 		a.tablesLoading = false
 		a.previewMeta = nil
-		a.previewScroll = 0
+		a.selectedCols = nil
+		a.previewScroll, a.previewCursor = 0, 0
 		a.previewFilter.SetValue("")
 		a.previewFiltering = false
 		return a, nil
 
 	case metaLoadedMsg:
 		a.previewMeta = msg.meta
-		a.previewScroll = 0
+		a.selectedCols = nil
+		a.previewScroll, a.previewCursor = 0, 0
 		a.previewFilter.SetValue("")
 		a.previewFiltering = false
 		return a, nil
@@ -449,7 +457,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.selectedSchema = ""
 		a.selectedTable = ""
 		a.previewMeta = nil
-		a.previewScroll = 0
+		a.selectedCols = nil
+		a.previewScroll, a.previewCursor = 0, 0
 		a.previewFilter.SetValue("")
 		a.tableList.SetItems(nil)
 		a.schemaList.SetItems(nil)
@@ -491,6 +500,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case DlCancelMsg:
 		a.state = stateBrowse
 		return a, nil
+
+	case DlCopyMsg:
+		a.commands = append(a.commands, msg.Command)
+		a.statusOK = "CLI command copied to the clipboard (also printed when you quit):\n\n" + msg.Command
+		a.state = stateDone
+		return a, func() tea.Msg {
+			termenv.Copy(msg.Command) // OSC 52; not every terminal or multiplexer passes it on
+			return nil
+		}
 
 	case DlSubmitMsg:
 		a.state = stateDownloading
@@ -559,7 +577,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			var cmd tea.Cmd
 			a.previewFilter, cmd = a.previewFilter.Update(msg)
-			a.previewScroll = 0
+			a.previewScroll, a.previewCursor = 0, 0
 			return a, cmd
 		}
 
@@ -604,7 +622,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if sel := selectedItemTitle(a.tableList); sel != "" {
 					a.selectedTable = sel
 					a.previewMeta = nil
-					a.previewScroll = 0
+					a.previewScroll, a.previewCursor = 0, 0
 					a.previewFilter.SetValue("")
 					a.focus = panePreview
 					return a, a.loadMeta(a.selectedSchema, sel)
@@ -626,13 +644,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			if a.selectedSchema != "" && a.selectedTable != "" {
-				var colNames []string
+				var colNames, selected []string
 				if a.previewMeta != nil {
 					for _, c := range a.previewMeta.Columns {
 						colNames = append(colNames, c.Name)
+						if a.selectedCols[c.Name] {
+							selected = append(selected, c.Name)
+						}
 					}
 				}
-				a.dlForm = newDlForm(a.selectedSchema, a.selectedTable, colNames)
+				a.dlForm = newDlForm(a.selectedSchema, a.selectedTable, a.currentDatabase, colNames, selected)
 				a.state = stateDownloadForm
 				return a, nil
 			}
@@ -672,12 +693,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd = textinput.Blink
 			case "j", "down":
 				cols := a.filteredColumns()
-				if a.previewScroll < len(cols)-1 {
-					a.previewScroll++
+				if a.previewCursor < len(cols)-1 {
+					a.previewCursor++
 				}
 			case "k", "up":
-				if a.previewScroll > 0 {
-					a.previewScroll--
+				if a.previewCursor > 0 {
+					a.previewCursor--
+				}
+			case " ":
+				cols := a.filteredColumns()
+				if a.previewCursor < len(cols) {
+					name := cols[a.previewCursor].Name
+					if a.selectedCols == nil {
+						a.selectedCols = map[string]bool{}
+					}
+					if a.selectedCols[name] {
+						delete(a.selectedCols, name)
+					} else {
+						a.selectedCols[name] = true
+					}
 				}
 			}
 		}
@@ -771,7 +805,11 @@ func (a *App) View() string {
 	}
 	if a.state == stateDone {
 		msg := styleSuccess.Render("✓ ") + a.statusOK + "\n\n" + styleStatusBar.Render("[esc] dismiss")
-		return overlayCenter(full, stylePanelFocused.Padding(1, 3).Render(msg), a.width, a.height)
+		box := stylePanelFocused.Padding(1, 3)
+		if maxW := a.width - 8; lipgloss.Width(msg) > maxW-8 && maxW > 20 {
+			box = box.Width(maxW)
+		}
+		return overlayCenter(full, box.Render(msg), a.width, a.height)
 	}
 
 	return full
@@ -785,7 +823,7 @@ func (a *App) loginView() string {
 }
 
 func (a *App) footerView() string {
-	keys := "[tab] pane  [→/l] select  [←/h] back  [d] download  [b] databases  [/] filter  [q] quit"
+	keys := "[tab] pane  [→/l] select  [←/h] back  [space] mark column  [d] download  [b] databases  [/] filter  [q] quit"
 	footer := styleStatusBar.Render(keys)
 	if a.statusErr != "" {
 		errText := a.statusErr
@@ -872,13 +910,13 @@ func (a *App) renderPreviewPanel(w, h int) string {
 			if typeW > 20 {
 				typeW = 20
 			}
-			descW := contentW - nameW - typeW - 4 // 2-char gaps
+			descW := contentW - nameW - typeW - 6 // 2-char marker + 2-char gaps
 			if descW < 8 {
 				descW = 8
 			}
 
 			// Column header
-			hdr := fmt.Sprintf("%-*s  %-*s  %-*s", nameW, "Column", typeW, "Type", descW, "Description")
+			hdr := fmt.Sprintf("  %-*s  %-*s  %-*s", nameW, "Column", typeW, "Type", descW, "Description")
 			sb.WriteString(styleCellHeader.Render(truncStr(hdr, contentW)) + "\n")
 			sb.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Repeat("─", contentW)) + "\n")
 
@@ -890,6 +928,16 @@ func (a *App) renderPreviewPanel(w, h int) string {
 				availRows = 1
 			}
 
+			// Keep the cursor in view.
+			if a.previewCursor >= len(cols) {
+				a.previewCursor = len(cols) - 1
+			}
+			if a.previewCursor < a.previewScroll {
+				a.previewScroll = a.previewCursor
+			}
+			if a.previewCursor >= a.previewScroll+availRows {
+				a.previewScroll = a.previewCursor - availRows + 1
+			}
 			start := a.previewScroll
 			end := start + availRows
 			if end > len(cols) {
@@ -898,13 +946,20 @@ func (a *App) renderPreviewPanel(w, h int) string {
 
 			for i := start; i < end; i++ {
 				c := cols[i]
-				line := fmt.Sprintf("%-*s  %-*s  %s",
+				marker := "  "
+				if a.selectedCols[c.Name] {
+					marker = "● "
+				}
+				line := fmt.Sprintf("%s%-*s  %-*s  %s", marker,
 					nameW, truncStr(c.Name, nameW),
 					typeW, truncStr(c.DataType, typeW),
 					truncStr(c.Description, descW))
 				style := styleCellNormal
 				if i%2 == 0 {
 					style = style.Foreground(lipgloss.Color("#D1D5DB"))
+				}
+				if i == a.previewCursor && a.focus == panePreview {
+					style = style.Foreground(colorFocus).Bold(true)
 				}
 				sb.WriteString(style.Render(line) + "\n")
 			}
@@ -916,6 +971,9 @@ func (a *App) renderPreviewPanel(w, h int) string {
 		countStr := fmt.Sprintf("%d columns", total)
 		if shown < total {
 			countStr = fmt.Sprintf("%d/%d columns", shown, total)
+		}
+		if n := len(a.selectedCols); n > 0 {
+			countStr += fmt.Sprintf(" · %d marked", n)
 		}
 		sb.WriteString(styleRowCount.Render(countStr))
 
@@ -974,6 +1032,9 @@ func (a *App) filteredColumns() []db.ColumnMeta {
 	}
 	return out
 }
+
+// Commands returns the CLI commands copied during the session, oldest first.
+func (a *App) Commands() []string { return a.commands }
 
 // Err returns the last error message (login or status), if any.
 func (a *App) Err() string {

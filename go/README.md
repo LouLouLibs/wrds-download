@@ -4,7 +4,7 @@ Full-featured terminal tool for browsing and downloading data from the [WRDS](ht
 
 ## Features
 
-- **TUI** — browse schemas and tables, inspect column metadata, trigger downloads without leaving the terminal
+- **TUI** — browse schemas and tables, inspect column metadata, pick columns, trigger downloads without leaving the terminal, or copy the equivalent CLI command
 - **CLI** — scriptable `download` command with structured flags or raw SQL
 - **`info` command** — inspect table metadata (columns, types, row count) from the command line or scripts
 - **Parquet output** — streams rows via pgx and writes Parquet with ZSTD compression through Apache Arrow (arrow-go, pure Go)
@@ -61,6 +61,8 @@ The TUI has three panes: **Schemas**, **Tables**, and **Preview** (column catalo
 | `tab` / `shift+tab` | Cycle focus between panes |
 | `right` / `l` | Drill into selected schema or table |
 | `left` / `h` | Go back one pane |
+| `j` / `k` (Preview) | Move the column cursor |
+| `space` (Preview) | Mark / unmark the column under the cursor; marked columns pre-fill the download dialog |
 | `d` | Open download dialog for the selected table |
 | `b` | Switch database |
 | `/` | Filter current list (schemas, tables, or columns) |
@@ -73,11 +75,22 @@ Press `d` on a selected table to open the download form:
 
 | Field | Description |
 |---|---|
-| SELECT columns | Comma-separated column names, or `*` for all |
+| SELECT columns | Comma-separated column names, or `*` for all; starts with the columns marked in Preview |
 | WHERE clause | SQL filter without the `WHERE` keyword |
 | LIMIT rows | Maximum number of rows to download (leave empty for no limit) |
 | Output path | File path; defaults to `./schema_table.parquet` |
 | Format | `parquet` or `csv` |
+| Exact decimals | `y` for `--decimal` (see [Exact decimals](#exact-decimals)) |
+
+Below the fields, the form shows the equivalent `wrds-dl download …` command, updated as you
+type. `enter` on the last field downloads; `ctrl+y` copies the command to the clipboard
+instead (via OSC 52, which most terminals support; inside tmux it needs `set -g set-clipboard on`).
+Copied commands are also printed to stdout when you quit the TUI, so you can browse
+interactively and then script the download:
+
+```sh
+wrds-dl download --schema crsp --table msf --columns "permno,date,ret" --where "date >= '2020-01-01'" --out ./crsp_msf.parquet
+```
 
 ## CLI
 
